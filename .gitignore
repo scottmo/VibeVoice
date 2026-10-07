@@ -40,6 +40,16 @@ logs/
 *.ckpt
 *.h5
 models/
+!models/
+models/*
+!models/tts/
+models/tts/*
+!models/tts/.gitkeep
+!models/vocal_isolation/
+models/vocal_isolation/*
+!models/vocal_isolation/MelBandRoformer/
+models/vocal_isolation/MelBandRoformer/*
+!models/vocal_isolation/MelBandRoformer/.gitkeep
 checkpoints/
 
 # Python

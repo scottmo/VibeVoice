@@ -6,7 +6,22 @@ import argparse
 import json
 import os
 import time
+from pathlib import Path
 from typing import Iterator, Tuple, Optional
+
+# Load the project .env before importing Transformers/Hugging Face modules,
+# which read HF_* environment switches during import.
+from vibevoice.model_loading import (
+    ModelLoadingSettings,
+    default_model_name,
+    discover_local_models,
+    load_model_and_processor,
+    normalize_model_selection,
+    add_model_cli_arguments,
+    launch_compatibly,
+    settings_from_args,
+)
+
 import threading
 import multiprocessing
 import queue
@@ -69,24 +84,10 @@ def get_attention_implementation(device_type: str):
         # CPU fallback to SDPA
         return "sdpa"
 
-from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
-from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 from vibevoice.modular.streamer import AudioStreamer
 from vibevoice.utils.vocal_isolation import VocalIsolator, clear_vocal_isolator_cache
 from transformers.utils import logging
 from transformers import set_seed
-try:
-    # Optional: used only for 4-bit quantized model loading
-    from transformers import BitsAndBytesConfig
-    _HAS_BNB = True
-except Exception:
-    _HAS_BNB = False
-from vibevoice.modular.configuration_vibevoice import VibeVoiceConfig
-try:
-    from huggingface_hub import snapshot_download
-    _HAS_HF_HUB = True
-except Exception:
-    _HAS_HF_HUB = False
 
 logging.set_verbosity_info()
 logger = logging.get_logger(__name__)
@@ -393,8 +394,8 @@ def reset_gain_control() -> float:
 # Multiprocessing Model Worker (for true VRAM cleanup in LOD mode)
 # ============================================================================
 
-def model_worker_process(request_queue, response_queue, model_path, device, inference_steps, 
-                         hf_offline, hf_cache_dir, attn_implementation):
+def model_worker_process(request_queue, response_queue, model_path, device, inference_steps,
+                         model_settings, attn_implementation):
     """
     Worker process that loads and runs the model.
     When this process is killed, the OS forcibly reclaims ALL GPU memory.
@@ -430,31 +431,15 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
         
         # Import vibevoice modules - use correct paths
         print(f"[Worker] Attempting to import vibevoice modules...")
-        from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
-        print(f"[Worker] ✓ Imported VibeVoiceProcessor")
-        from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
-        print(f"[Worker] ✓ Imported VibeVoiceForConditionalGenerationInference")
-        from vibevoice.modular.configuration_vibevoice import VibeVoiceConfig
-        print(f"[Worker] ✓ Imported VibeVoiceConfig")
+        from vibevoice.model_loading import load_model_and_processor
         
         print(f"[Worker] Loading model {model_path} in child process (PID: {os.getpid()})")
-        
-        # Load processor
-        processor = VibeVoiceProcessor.from_pretrained(
+        processor, model, _resolved = load_model_and_processor(
             model_path,
-            local_files_only=bool(hf_offline),
-            cache_dir=hf_cache_dir,
-        )
-        
-        # Load model
-        model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-            model_path,
-            torch_dtype=torch.bfloat16,
-            device_map=device,
+            model_settings,
+            device=device,
             attn_implementation=attn_implementation,
-            cache_dir=hf_cache_dir,
         )
-        model.eval()
         
         # Setup scheduler
         model.model.noise_scheduler = model.model.noise_scheduler.from_config(
@@ -584,8 +569,10 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
 class VibeVoiceDemo:
     def __init__(self, model_path: str, device: str = None, inference_steps: int = 5, debug: bool = False, load_on_demand: bool = False,
                  script_ai_url: str | None = None, script_ai_model: str | None = None, script_ai_api_key: str | None = None,
-                 hf_offline: bool | None = None, hf_cache_dir: str | None = None):
+                 hf_offline: bool | None = None, hf_cache_dir: str | None = None,
+                 model_settings: ModelLoadingSettings | None = None):
         """Initialize the VibeVoice demo with model loading."""
+        self.model_settings = model_settings or settings_from_args()
         self.model_path = model_path
         
         # Auto-detect device if not specified
@@ -608,8 +595,15 @@ class VibeVoiceDemo:
         self.script_ai_model = script_ai_model
         self.script_ai_api_key = script_ai_api_key
         # HF loading options
-        self.hf_offline = hf_offline
-        self.hf_cache_dir = hf_cache_dir
+        if hf_offline or hf_cache_dir:
+            # Retain compatibility for integrations constructing this class
+            # directly instead of passing parsed model settings.
+            from dataclasses import replace
+            self.model_settings = replace(
+                self.model_settings,
+                hf_offline=self.model_settings.hf_offline or bool(hf_offline),
+                hf_cache_dir=(Path(hf_cache_dir).expanduser().resolve() if hf_cache_dir else self.model_settings.hf_cache_dir),
+            )
         self.is_generating = False  # Track generation state
         self.stop_generation = False  # Flag to stop generation
         self.current_streamer = None  # Track current audio streamer
@@ -623,13 +617,35 @@ class VibeVoiceDemo:
         self.response_queue = None
         self.use_multiprocessing_lod = load_on_demand  # Use MP worker only in LOD mode
 
-        # Available models
-        self.available_models = {
-            "WestZhang/VibeVoice-Large-pt": "vibevoice/VibeVoice-7B",  # Legacy support with fallback
-            "microsoft/VibeVoice-1.5B": "microsoft/VibeVoice-1.5B",
-            # 4-bit quantized weights hosted by DevParker; reuse 7B config/processor
-            "DevParker/VibeVoice7b-low-vram (4-bit)": "DevParker/VibeVoice7b-low-vram/4bit",
-        }
+        if self.model_settings.source == "local":
+            self.available_models = discover_local_models(self.model_settings)
+            requested_path = Path(model_path).expanduser()
+            root_path = requested_path if requested_path.is_absolute() else (Path(__file__).resolve().parent / requested_path)
+            if requested_path.is_absolute() or root_path.is_dir():
+                try:
+                    from vibevoice.model_loading import validate_tts_model
+                    validate_tts_model(root_path)
+                    self.available_models[model_path] = str(root_path.resolve())
+                except ValueError:
+                    pass
+        else:
+            self.available_models = {
+                "WestZhang/VibeVoice-Large-pt": "WestZhang/VibeVoice-Large-pt",
+                "VibeVoice-1.5B": "VibeVoice-1.5B",
+                "VibeVoice-7B": "VibeVoice-7B",
+                "VibeVoice-Large-Q8": "VibeVoice-Large-Q8",
+                "microsoft/VibeVoice-1.5B": "microsoft/VibeVoice-1.5B",
+                "vibevoice/VibeVoice-7B": "vibevoice/VibeVoice-7B",
+                "FabioSarracino/VibeVoice-Large-Q8": "FabioSarracino/VibeVoice-Large-Q8",
+                # Historical 4-bit choice, retained for online users.
+                "DevParker/VibeVoice7b-low-vram (4-bit)": "DevParker/VibeVoice7b-low-vram (4-bit)",
+            }
+
+        self.model_path = normalize_model_selection(
+            self.model_path,
+            self.available_models,
+            self.model_settings.source,
+        )
 
         # Initialize last prompt storage for regeneration
         self.last_prompt_data = None
@@ -672,10 +688,6 @@ class VibeVoiceDemo:
         self.request_queue = multiprocessing.Queue()
         self.response_queue = multiprocessing.Queue()
         
-        # Get settings
-        hf_offline_env = os.getenv('HF_HUB_OFFLINE')
-        offline_mode = self.hf_offline if self.hf_offline is not None else (hf_offline_env == '1' or (hf_offline_env or '').lower() in ['true', 'yes'])
-        cache_dir = self.hf_cache_dir or os.getenv('HF_HOME') or os.getenv('TRANSFORMERS_CACHE') or None
         attn_implementation = get_attention_implementation(self.device)
         
         # Resolve mapped path
@@ -686,7 +698,7 @@ class VibeVoiceDemo:
         self.worker_process = multiprocessing.Process(
             target=model_worker_process,
             args=(self.request_queue, self.response_queue, model_path_to_use, 
-                  self.device, self.inference_steps, offline_mode, cache_dir, attn_implementation)
+                  self.device, self.inference_steps, self.model_settings, attn_implementation)
         )
         self.worker_process.start()
         
@@ -831,241 +843,38 @@ class VibeVoiceDemo:
 
         # Update model path and load new model
         self.model_path = new_model_path
+        if self.load_on_demand:
+            self.model_loaded = False
+            print("🔄 Load On Demand: selected model will load on the next generation request")
+            return True
         self.load_model()
         # Voice presets are already set up in __init__, no need to call again
 
         return True
 
     def load_model(self):
-        """Load the VibeVoice model and processor."""
+        """Load the selected VibeVoice model through the shared resolver."""
         print(f"Loading processor & model from {self.model_path}")
-
-        # Determine offline and cache settings
-        hf_offline_env = os.getenv('HF_HUB_OFFLINE')
-        offline_mode = self.hf_offline if self.hf_offline is not None else (hf_offline_env == '1' or (hf_offline_env or '').lower() in ['true', 'yes'])
-        cache_dir = self.hf_cache_dir or os.getenv('HF_HOME') or os.getenv('TRANSFORMERS_CACHE') or None
-
-        # Get the best attention implementation for the device
         attn_implementation = get_attention_implementation(self.device)
         print(f"🎯 Using attention implementation: {attn_implementation}")
-        
-        # Resolve mapped path if using display label
-        mapped_path = self.available_models.get(self.model_path, self.model_path)
-        # Handle 7B model fallback for legacy support
-        model_path_to_use = mapped_path
+        requested_path = self.available_models.get(self.model_path, self.model_path)
+        self.processor, self.model, resolved = load_model_and_processor(
+            requested_path,
+            self.model_settings,
+            device=self.device,
+            attn_implementation=attn_implementation,
+        )
 
-        # Special handling for 4-bit quantized model selection
-        if self.model_path == "DevParker/VibeVoice7b-low-vram (4-bit)":
-            if not _HAS_BNB:
-                raise gr.Error("bitsandbytes is required for 4-bit loading. Please install it: pip install bitsandbytes")
-            if not _HAS_HF_HUB:
-                raise gr.Error("huggingface_hub is required to fetch processor/config. Please install it: pip install huggingface_hub")
-
-            weights_repo = "DevParker/VibeVoice7b-low-vram"
-            subfolder = "4bit"
-
-            # Load processor and config from WestZhang 7B (preferred), fallback to vibevoice 7B
-            try:
-                westzhang_local_dir = snapshot_download(repo_id="WestZhang/VibeVoice-Large-pt", local_files_only=False, cache_dir=cache_dir)
-                self.processor = VibeVoiceProcessor.from_pretrained(
-                    westzhang_local_dir,
-                    language_model_pretrained_name="Qwen/Qwen2.5-7B",
-                )
-                base_config = VibeVoiceConfig.from_pretrained(
-                    "vibevoice/VibeVoice-7B",
-                    local_files_only=False,
-                    cache_dir=cache_dir,
-                )
-            except Exception:
-                print("⚠️ Could not load processor/config from WestZhang/VibeVoice-Large-pt. Falling back to vibevoice/VibeVoice-7B")
-                vibe_local_dir = snapshot_download(repo_id="vibevoice/VibeVoice-7B", local_files_only=False, cache_dir=cache_dir)
-                self.processor = VibeVoiceProcessor.from_pretrained(
-                    vibe_local_dir,
-                    language_model_pretrained_name="Qwen/Qwen2.5-7B",
-                )
-                base_config = VibeVoiceConfig.from_pretrained(
-                    "vibevoice/VibeVoice-7B",
-                    local_files_only=False,
-                    cache_dir=cache_dir,
-                )
-
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_compute_dtype=torch.float16,
-                bnb_4bit_use_double_quant=True,
-                bnb_4bit_quant_type="nf4",
-            )
-
-            try:
-                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    weights_repo,
-                    subfolder=subfolder,
-                    config=base_config,
-                    quantization_config=bnb_config,
-                    device_map=self.device,
-                    attn_implementation="sdpa",
-                    torch_dtype=torch.float16,
-                    local_files_only=bool(offline_mode),
-                    cache_dir=cache_dir,
-                )
-                self.model.eval()
-            except Exception as model_error:
-                print(f"⚠️ Loading pre-quantized 4-bit weights failed: {model_error}")
-                print("🔄 Falling back to on-the-fly 4-bit quantization from vibevoice/VibeVoice-7B")
-                try:
-                    self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                        "vibevoice/VibeVoice-7B",
-                        config=base_config,
-                        quantization_config=bnb_config,
-                        device_map=self.device,
-                        attn_implementation="sdpa",
-                        torch_dtype=torch.float16,
-                        local_files_only=False,
-                        cache_dir=cache_dir,
-                    )
-                    self.model.eval()
-                except Exception as fallback_error:
-                    print(f"❌ On-the-fly 4-bit quantization load also failed: {fallback_error}")
-                    if offline_mode:
-                        raise gr.Error(f"Offline mode is enabled and required files are not in cache. Set HF_HUB_OFFLINE=0 or disable --hf-offline to allow downloads. Cache dir: {cache_dir or 'default'}")
-                    else:
-                        raise fallback_error
-
-            # Use SDE solver by default
-            self.model.model.noise_scheduler = self.model.model.noise_scheduler.from_config(
-                self.model.model.noise_scheduler.config,
-                algorithm_type='sde-dpmsolver++',
-                beta_schedule='squaredcos_cap_v2'
-            )
-            self.model.set_ddpm_inference_steps(num_steps=self.inference_steps)
-
-            if hasattr(self.model.model, 'language_model'):
-                print(f"Language model attention: {self.model.model.language_model.config._attn_implementation}")
-
-            self.model_loaded = True
-            print("✅ 4-bit quantized model loaded successfully")
-            return
-        if self.model_path == "WestZhang/VibeVoice-Large-pt":
-            print("🔄 Detected legacy 7B model path. Attempting fallback mechanism...")
-            print("📁 Attempting to load from local cache (legacy WestZhang model)...")
-            
-            # Try to load legacy model from local cache
-            legacy_loaded = False
-            try:
-                self.processor = VibeVoiceProcessor.from_pretrained(
-                    "WestZhang/VibeVoice-Large-pt",
-                    local_files_only=True,
-                    cache_dir=cache_dir,
-                )
-                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    "WestZhang/VibeVoice-Large-pt",
-                    torch_dtype=torch.bfloat16,
-                    device_map=self.device,
-                    attn_implementation=attn_implementation,
-                    local_files_only=True,
-                    cache_dir=cache_dir,
-                )
-                self.model.eval()
-                print("✅ Successfully loaded legacy WestZhang model from local cache")
-                self.model_loaded = True
-                legacy_loaded = True
-            except Exception as legacy_error:
-                # If the primary attention implementation fails, try SDPA fallback
-                if attn_implementation != "sdpa":
-                    print(f"⚠️ {attn_implementation} failed for legacy model, falling back to SDPA: {legacy_error}")
-                    try:
-                        self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                            "WestZhang/VibeVoice-Large-pt",
-                            torch_dtype=torch.bfloat16,
-                            device_map=self.device,
-                            attn_implementation="sdpa",
-                            local_files_only=True,
-                            cache_dir=cache_dir,
-                        )
-                        self.model.eval()
-                        print("✅ Successfully loaded legacy WestZhang model with SDPA fallback")
-                        self.model_loaded = True
-                        legacy_loaded = True
-                    except Exception as legacy_fallback_error:
-                        print(f"❌ Both {attn_implementation} and SDPA failed for legacy model: {legacy_fallback_error}")
-                else:
-                    print(f"❌ SDPA failed for legacy model: {legacy_error}")
-            
-            # If legacy loading failed, fall back to new repository
-            if not legacy_loaded:
-                print("⚠️ Legacy model not found in local cache")
-                print("🔄 Falling back to new vibevoice/VibeVoice-7B repository...")
-                model_path_to_use = "vibevoice/VibeVoice-7B"
-            else:
-                return
-
-        try:
-            # Load processor
-            self.processor = VibeVoiceProcessor.from_pretrained(
-                model_path_to_use,
-                local_files_only=bool(offline_mode),
-                cache_dir=cache_dir,
-            )
-
-            # Load model with fallback mechanism
-            try:
-                self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    model_path_to_use,
-                    torch_dtype=torch.bfloat16,
-                    device_map=self.device,
-                    attn_implementation=attn_implementation,
-                    local_files_only=bool(offline_mode),
-                    cache_dir=cache_dir,
-                )
-                self.model.eval()
-            except Exception as model_error:
-                # If the primary attention implementation fails, try SDPA fallback
-                if attn_implementation != "sdpa":
-                    print(f"⚠️ {attn_implementation} failed, falling back to SDPA: {model_error}")
-                    try:
-                        self.model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                            model_path_to_use,
-                            torch_dtype=torch.bfloat16,
-                            device_map=self.device,
-                            attn_implementation="sdpa",
-                            local_files_only=bool(offline_mode),
-                            cache_dir=cache_dir,
-                        )
-                        self.model.eval()
-                        print("✅ Successfully loaded model with SDPA fallback")
-                    except Exception as fallback_error:
-                        print(f"❌ Both {attn_implementation} and SDPA failed: {fallback_error}")
-                        if offline_mode:
-                            raise gr.Error(f"Offline mode is enabled and required files are not in cache. Set HF_HUB_OFFLINE=0 or disable --hf-offline to allow downloads. Cache dir: {cache_dir or 'default'}")
-                        else:
-                            raise fallback_error
-                else:
-                    # SDPA already failed, re-raise the original error
-                    if offline_mode:
-                        raise gr.Error(f"Offline mode is enabled and required files are not in cache. Set HF_HUB_OFFLINE=0 or disable --hf-offline to allow downloads. Cache dir: {cache_dir or 'default'}")
-                    else:
-                        raise model_error
-        except Exception as e:
-            if offline_mode:
-                raise gr.Error(f"Offline mode is enabled and required files are not in cache. Set HF_HUB_OFFLINE=0 or disable --hf-offline to allow downloads. Cache dir: {cache_dir or 'default'}")
-            else:
-                raise
-        
-        # Use SDE solver by default
         self.model.model.noise_scheduler = self.model.model.noise_scheduler.from_config(
-            self.model.model.noise_scheduler.config, 
+            self.model.model.noise_scheduler.config,
             algorithm_type='sde-dpmsolver++',
-            beta_schedule='squaredcos_cap_v2'
+            beta_schedule='squaredcos_cap_v2',
         )
         self.model.set_ddpm_inference_steps(num_steps=self.inference_steps)
-        
         if hasattr(self.model.model, 'language_model'):
             print(f"Language model attention: {self.model.model.language_model.config._attn_implementation}")
-
-        # Mark model as loaded
         self.model_loaded = True
-        print(f"✅ Model loaded successfully from {self.model_path}")
-    
+        print(f"✅ Model loaded successfully from {resolved.model_dir}")
     def setup_voice_presets(self):
         """Setup voice presets by scanning both demo voices and custom voices directories."""
         # Demo voices directory (relative to main.py)
@@ -1205,7 +1014,7 @@ class VibeVoiceDemo:
         
         try:
             # Create a fresh isolator instance (will be cleaned up after)
-            isolator = VocalIsolator(device=self.device, debug=self.debug)
+            isolator = VocalIsolator(device=self.device, debug=self.debug, settings=self.model_settings)
             
             for i, sample in enumerate(voice_samples):
                 if len(sample) > 0:
@@ -2849,11 +2658,16 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                 
                 # Model selector
                 gr.Markdown("### 🤖 **Model Selection**")
+                model_choices = list(demo_instance.available_models.keys())
+                selected_model = demo_instance.model_path if demo_instance.model_path in demo_instance.available_models else (model_choices[0] if model_choices else None)
+                model_info = "Select a model (the current model unloads when switched)."
+                if not model_choices and demo_instance.model_settings.source == "local":
+                    model_info = f"No complete local TTS checkpoints found under {demo_instance.model_settings.tts_dir}. Add a model folder there."
                 model_selector = gr.Dropdown(
-                    choices=list(demo_instance.available_models.keys()),
-                    value=demo_instance.model_path if demo_instance.model_path in demo_instance.available_models else list(demo_instance.available_models.keys())[0],
+                    choices=model_choices,
+                    value=selected_model,
                     label="Select Model",
-                    info="Switch between large and small models (will unload current model)",
+                    info=model_info,
                     elem_classes="dropdown-container",
                     multiselect=False
                 )
@@ -3640,11 +3454,13 @@ def convert_to_16_bit_wav(data):
 def parse_args():
     parser = argparse.ArgumentParser(description="VibeVoice Gradio Demo")
     parser.add_argument(
-        "--model_path",
+        "--model-path", "--model_path",
+        dest="model_path",
         type=str,
-        default="/tmp/vibevoice-model",
-        help="Path to the VibeVoice model directory",
+        default=None,
+        help="Model name or explicit local model directory",
     )
+    add_model_cli_arguments(parser)
     parser.add_argument(
         "--device",
         type=str,
@@ -3699,24 +3515,17 @@ def parse_args():
         default=None,
         help="API key for script generation service (optional for local servers)",
     )
-    parser.add_argument(
-        "--hf-offline",
-        action="store_true",
-        help="Enable offline mode for Hugging Face downloads (local cache only)",
-    )
-    parser.add_argument(
-        "--hf-cache-dir",
-        type=str,
-        default=None,
-        help="Custom cache directory for Hugging Face models/processors",
-    )
-    
     return parser.parse_args()
 
 
 def main():
     """Main function to run the demo."""
     args = parse_args()
+    model_settings = settings_from_args(args)
+    model_path = args.model_path or default_model_name(
+        model_settings,
+        legacy_default="WestZhang/VibeVoice-Large-pt",
+    )
 
     # ⚠️ SECURITY WARNING: Check for --share flag
     if args.share:
@@ -3746,14 +3555,9 @@ def main():
 
     print("🎙️ Initializing VibeVoice Demo with Streaming Support...")
 
-    # Set default model to large model if not specified
-    if args.model_path == "/tmp/vibevoice-model":
-        args.model_path = "WestZhang/VibeVoice-Large-pt"  # Legacy path with fallback support
-        print(f"🎯 Auto-selecting large model: {args.model_path}")
-
     # Initialize demo instance
     demo_instance = VibeVoiceDemo(
-        model_path=args.model_path,
+        model_path=model_path,
         device=args.device,
         inference_steps=args.inference_steps,
         debug=args.debug,
@@ -3761,15 +3565,17 @@ def main():
         script_ai_url=args.script_ai_url,
         script_ai_model=args.script_ai_model,
         script_ai_api_key=args.script_ai_api_key,
-        hf_offline=bool(args.hf_offline),
+        hf_offline=args.hf_offline,
         hf_cache_dir=args.hf_cache_dir,
+        model_settings=model_settings,
     )
     
     # Create interface
     interface = create_demo_interface(demo_instance)
     
     print(f"🚀 Launching demo on port 7590 (network accessible)")
-    print(f"📁 Model path: {args.model_path}")
+    print(f"📁 Model path: {model_path}")
+    print(f"🧭 Model source: {model_settings.source} ({model_settings.models_dir})")
     print(f"🎭 Available voices: {len(demo_instance.available_voices)}")
     print(f"🔴 Streaming mode: ENABLED")
     print(f"🔒 Session isolation: ENABLED")
@@ -3778,10 +3584,11 @@ def main():
     
     # Launch the interface
     try:
-        interface.queue(
+        queued = interface.queue(
             max_size=20,  # Maximum queue size
             default_concurrency_limit=1  # Process one request at a time
-        ).launch(
+        )
+        launch_compatibly(queued,
             share=args.share,
             server_port=7590,  # Always use port 7590 for network access
             server_name="0.0.0.0",  # Always serve on network interface

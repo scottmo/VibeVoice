@@ -1,6 +1,6 @@
 # VibeVoice Dependencies
 # Core ML/AI libraries
-torch
+torch>=2.7.1
 accelerate==1.6.0
 transformers==4.51.3
 diffusers
@@ -26,6 +26,9 @@ gradio>=4.0.0,<6.0.0  # Pin to avoid breaking changes in Gradio 6.0
 ml-collections
 absl-py
 python-dotenv
+
+# Quantized 8-bit and legacy 4-bit model loading (CUDA required for inference)
+bitsandbytes>=0.48.2
 
 # AI services
 openai

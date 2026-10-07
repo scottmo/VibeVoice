@@ -309,6 +309,58 @@ export HF_HUB_OFFLINE=1
 python main.py --lod
 ```
 
+### 📦 Local model folders
+
+Model loading is controlled by `.env` or command-line options. The sample config
+uses local checkpoints and selects VibeVoice-1.5B:
+
+```dotenv
+VIBEVOICE_MODEL_SOURCE=local
+VIBEVOICE_MODEL=VibeVoice-1.5B
+VIBEVOICE_MODELS_DIR=models
+VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS=true
+```
+
+Copy complete TTS model folders into these locations (keep each `config.json`,
+checkpoint index, and every indexed shard together):
+
+```text
+models/
+  tts/
+    VibeVoice-1.5B/
+    VibeVoice-7B/
+    VibeVoice-Large-Q8/
+  tokenizers/
+    Qwen2.5-1.5B/
+    Qwen2.5-7B/
+  vocal_isolation/
+    MelBandRoformer/
+      MelBandRoformer.ckpt
+```
+
+Local mode discovers complete VibeVoice TTS checkpoints under `models/tts/`,
+and excludes ASR checkpoints. It never downloads replacement TTS weights. If a
+checkpoint lacks tokenizer files, supporting downloads can place only the
+matching Qwen tokenizer in `models/tokenizers/`. Set
+`VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS=false` or pass `--no-support-downloads` to
+disable tokenizer and optional vocal-isolation downloads. `HF_HUB_OFFLINE=1`
+or `--hf-offline` prohibits all Hub downloads, regardless of that setting.
+
+To download a model into `models/tts/` instead, set
+`VIBEVOICE_MODEL_SOURCE=huggingface`; the model selector can use names such as
+`VibeVoice-1.5B`, `VibeVoice-7B`, or `VibeVoice-Large-Q8`. CLI options override
+`.env` values:
+
+```powershell
+python main.py --model-source local --models-dir models --model-path VibeVoice-1.5B
+python main.py --model-source huggingface --model-path VibeVoice-1.5B
+python main.py --model-source local --no-support-downloads --hf-offline --lod
+python main.py --model-source local --model-path "F:\Apps\ComfyUI\ComfyUI\models\tts\VibeVoice\VibeVoice-1.5B"
+```
+
+`--model_path` remains supported as an alias. Relative `--models-dir` and
+`--model-path` paths resolve from the repository folder.
+
 ### 📁 Voice Organization
 
 - **Demo voices**: Located in `demo/voices/` (included with the project)
@@ -430,7 +482,7 @@ Before you begin, make sure you have the following installed on your system:
 
 | Requirement | Why you need it | How to check |
 |---|---|---|
-| **Python 3.8+** | Runs the application | `python --version` (or `python3 --version`) |
+| **Python 3.10+ (3.11 recommended)** | Runs the application and supported Windows CUDA stack | `python --version` (or `python3 --version`) |
 | **pip** | Installs Python packages | `pip --version` (or `pip3 --version`) |
 | **Git** | Clones the repository | `git --version` |
 | **ffmpeg** | Processes audio files | `ffmpeg -version` |
@@ -484,13 +536,13 @@ source venv/bin/activate
 
 **Windows (Command Prompt):**
 ```cmd
-python -m venv venv
+py -3.11 -m venv venv
 venv\Scripts\activate
 ```
 
 **Windows (PowerShell):**
 ```powershell
-python -m venv venv
+py -3.11 -m venv venv
 .\venv\Scripts\Activate.ps1
 ```
 
@@ -500,9 +552,9 @@ python -m venv venv
 
 PyTorch is the machine-learning framework VibeVoice is built on. Install the version that matches your hardware:
 
-**NVIDIA GPU (CUDA 12.1) — recommended:**
+**NVIDIA GPU (CUDA 12.8) — recommended, including Windows RTX 50 series:**
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install torch==2.7.1 torchvision==0.22.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
 ```
 
 **CPU only or Apple Silicon (MPS):**
@@ -554,12 +606,25 @@ Inside `.env`, replace `your-open-ai-key` with your actual API key. If you don't
 python main.py
 ```
 
-After a moment you'll see a local URL (usually `http://localhost:7860`). Open it in your browser and you're ready to go.
+After a moment the local interface is available at `http://localhost:7590`. Open it in your browser and you're ready to go.
 
 > **Tip:** Add `--lod` for load-on-demand mode, which uses much less VRAM when idle:
 > ```bash
 > python main.py --lod
 > ```
+
+#### Step 8 — Verify the project environment
+
+Run the project checks using the same virtual environment that launches the app:
+
+```powershell
+.\venv\Scripts\python.exe -m unittest discover -s tests -v
+.\venv\Scripts\python.exe -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+`bitsandbytes` is installed with the project dependencies for the Q8 and legacy
+4-bit model options. Quantized inference requires a working CUDA and
+bitsandbytes combination; standard 1.5B/7B loading does not require quantization.
 
 #### Verify everything is working
 

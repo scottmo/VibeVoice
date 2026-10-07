@@ -1,13 +1,26 @@
 import argparse
 import os
 import re
+import sys
 import traceback
+from pathlib import Path
 from typing import List, Tuple, Union, Dict, Any
 import time
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+# Load .env before Torch/Transformers/Hugging Face imports.
+from vibevoice.model_loading import (
+    add_model_cli_arguments,
+    default_model_name,
+    load_model_and_processor,
+    settings_from_args,
+)
+
 import torch
 
-from vibevoice.modular.modeling_vibevoice_inference import VibeVoiceForConditionalGenerationInference
-from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 from transformers.utils import logging
 
 # Device detection and attention mechanism fallback
@@ -166,11 +179,13 @@ def parse_txt_script(txt_content: str) -> Tuple[List[str], List[str]]:
 def parse_args():
     parser = argparse.ArgumentParser(description="VibeVoice Processor TXT Input Test")
     parser.add_argument(
-        "--model_path",
+        "--model-path", "--model_path",
+        dest="model_path",
         type=str,
-        default="microsoft/VibeVoice-1.5b",
-        help="Path to the HuggingFace model directory",
+        default=None,
+        help="Model name or explicit local model directory",
     )
+    add_model_cli_arguments(parser)
     
     parser.add_argument(
         "--txt_path",
@@ -208,6 +223,8 @@ def parse_args():
 
 def main():
     args = parse_args()
+    model_settings = settings_from_args(args)
+    model_path = args.model_path or default_model_name(model_settings, legacy_default="microsoft/VibeVoice-1.5B")
 
     # Initialize voice mapper
     voice_mapper = VoiceMapper()
@@ -268,108 +285,24 @@ def main():
     full_script = '\n'.join(scripts)
     full_script = full_script.replace("’", "'")        
     
-    # Auto-detect device
+    # Auto-detect device and load through the same local/Hugging Face resolver
+    # used by the Gradio app and its load-on-demand worker.
     device, device_name = detect_device()
     print(f"🔍 Auto-detected device: {device_name}")
-    
-    # Get the best attention implementation for the device
     attn_implementation = get_attention_implementation(device)
     print(f"🎯 Using attention implementation: {attn_implementation}")
-    
-    # Load processor
-    print(f"Loading processor & model from {args.model_path}")
-    
-    # Handle 7B model fallback for legacy support
-    model_path_to_use = args.model_path
-    goto_generation = False
-    if args.model_path == "WestZhang/VibeVoice-Large-pt":
-        print("🔄 Detected legacy 7B model path. Attempting fallback mechanism...")
-        try:
-            # First try to load from local cache (legacy support)
-            print("📁 Attempting to load from local cache (legacy WestZhang model)...")
-            processor = VibeVoiceProcessor.from_pretrained(
-                "WestZhang/VibeVoice-Large-pt",
-                local_files_only=True,
-            )
-            try:
-                model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    "WestZhang/VibeVoice-Large-pt",
-                    torch_dtype=torch.bfloat16,
-                    device_map=device,
-                    attn_implementation=attn_implementation,
-                    local_files_only=True,
-                )
-                model.eval()
-                model.set_ddpm_inference_steps(num_steps=10)
-                if hasattr(model.model, 'language_model'):
-                    print(f"Language model attention: {model.model.language_model.config._attn_implementation}")
-                print("✅ Successfully loaded legacy WestZhang model from local cache")
-                # Skip the rest of the loading logic since we already loaded
-                goto_generation = True
-            except Exception as legacy_error:
-                # If the primary attention implementation fails, try SDPA fallback
-                if attn_implementation != "sdpa":
-                    print(f"⚠️ {attn_implementation} failed for legacy model, falling back to SDPA: {legacy_error}")
-                    try:
-                        model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                            "WestZhang/VibeVoice-Large-pt",
-                            torch_dtype=torch.bfloat16,
-                            device_map=device,
-                            attn_implementation="sdpa",
-                            local_files_only=True,
-                        )
-                        model.eval()
-                        model.set_ddpm_inference_steps(num_steps=10)
-                        if hasattr(model.model, 'language_model'):
-                            print(f"Language model attention: {model.model.language_model.config._attn_implementation}")
-                        print("✅ Successfully loaded legacy WestZhang model with SDPA fallback")
-                        # Skip the rest of the loading logic since we already loaded
-                        goto_generation = True
-                    except Exception as legacy_fallback_error:
-                        print(f"❌ Both {attn_implementation} and SDPA failed for legacy model: {legacy_fallback_error}")
-                        # Continue to the main fallback mechanism
-                else:
-                    # SDPA already failed, continue to the main fallback mechanism
-                    print(f"❌ SDPA failed for legacy model: {legacy_error}")
-        except Exception as e:
-            print(f"⚠️ Legacy model not found in local cache: {e}")
-            print("🔄 Falling back to new vibevoice/VibeVoice-7B repository...")
-            model_path_to_use = "vibevoice/VibeVoice-7B"
-    
-    if not goto_generation:
-        processor = VibeVoiceProcessor.from_pretrained(model_path_to_use)
-
-        # Load model with fallback mechanism
-        try:
-            model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                model_path_to_use,
-                torch_dtype=torch.bfloat16,
-                device_map=device,
-                attn_implementation=attn_implementation
-            )
-        except Exception as e:
-            print(f"[ERROR] : {type(e).__name__}: {e}")
-            print(traceback.format_exc())
-            print("Error loading the model. Trying to use SDPA fallback...")
-            try:
-                model = VibeVoiceForConditionalGenerationInference.from_pretrained(
-                    model_path_to_use,
-                    torch_dtype=torch.bfloat16,
-                    device_map=device,
-                    attn_implementation='sdpa'
-                )
-                print("✅ Successfully loaded model with SDPA fallback")
-            except Exception as fallback_error:
-                print(f"❌ Both {attn_implementation} and SDPA failed: {fallback_error}")
-                raise fallback_error
-
-        model.eval()
-        model.set_ddpm_inference_steps(num_steps=10)
-
-        if hasattr(model.model, 'language_model'):
-           print(f"Language model attention: {model.model.language_model.config._attn_implementation}")
-       
-    # Prepare inputs for the model
+    print(f"Loading processor & model from {model_path}")
+    processor, model, resolved = load_model_and_processor(
+        model_path,
+        model_settings,
+        device=device,
+        attn_implementation=attn_implementation,
+    )
+    model.set_ddpm_inference_steps(num_steps=10)
+    if hasattr(model.model, 'language_model'):
+        print(f"Language model attention: {model.model.language_model.config._attn_implementation}")
+    print(f"✅ Model loaded from {resolved.model_dir}")
+        # Prepare inputs for the model
     inputs = processor(
         text=[full_script],  # Wrap in list for batch processing
         voice_samples=[voice_samples],  # Wrap in list for batch processing

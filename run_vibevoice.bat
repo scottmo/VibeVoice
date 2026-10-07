@@ -1,55 +1,32 @@
 @echo off
-REM VibeVoice Windows Launcher
-REM This script activates the virtual environment and launches VibeVoice
+setlocal
 
-echo Starting VibeVoice...
+REM Anchor paths to this launcher so it works from any current directory.
+pushd "%~dp0"
 
-REM Check if virtual environment exists
-if not exist "venv\Scripts\activate.bat" (
-    echo Error: Virtual environment not found!
-    echo Please run the installation instructions first to create a virtual environment.
-    echo.
-    echo To create a virtual environment:
-    echo   python -m venv venv
-    echo   venv\Scripts\activate
-    echo   pip install -e .
-    echo.
+echo Starting VibeVoice from %CD%...
+
+if not exist "venv\Scripts\python.exe" (
+    echo Error: project virtual environment not found.
+    echo Create it with Python 3.11 and install the project dependencies first.
+    popd
     pause
     exit /b 1
 )
 
-REM Activate virtual environment
-echo Activating virtual environment...
-call venv\Scripts\activate.bat
-
-REM Check if .env file exists
 if not exist ".env" (
-    echo Warning: .env file not found!
-    echo Please copy .env-sample to .env and add your API keys:
-    echo   copy .env-sample .env
-    echo.
+    echo Warning: .env file not found. Copy .env-sample to .env to configure model loading.
 )
 
-REM Launch VibeVoice
 echo Launching VibeVoice...
-echo.
-echo ========================================
-echo VibeVoice will be available at:
-echo http://localhost:7590
-echo ========================================
-echo.
-echo Note: If FlashAttention2 is not available, VibeVoice will
-echo automatically fall back to SDPA (Scaled Dot Product Attention).
-echo This ensures compatibility across different hardware configurations.
+echo The local interface is available at http://localhost:7590
 echo.
 
-REM Standard mode (loads model on startup)
-python main.py
-
-REM Load-on-demand mode (faster startup, loads model when needed)
-REM Uncomment the line below and comment out the line above to use load-on-demand mode:
-REM python main.py --lod
+venv\Scripts\python.exe main.py %*
+set "EXIT_CODE=%ERRORLEVEL%"
 
 echo.
-echo VibeVoice has stopped.
+echo VibeVoice has stopped with exit code %EXIT_CODE%.
+popd
 pause
+exit /b %EXIT_CODE%

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Union
 from functools import partial
 from tqdm import tqdm
+from vibevoice.model_loading import ModelLoadingSettings, settings_from_args
 
 # Model configuration matching ComfyUI's tested settings
 MEL_BAND_ROFORMER_CONFIG = {
@@ -48,23 +49,36 @@ MEL_BAND_ROFORMER_CONFIG = {
 # Model download URLs and paths
 HUGGINGFACE_MODEL_ID = "KimberleyJSN/melbandroformer"
 MODEL_FILENAME = "MelBandRoformer.ckpt"
-DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models", "vocal_isolation")
+DEFAULT_MODEL_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "models", "vocal_isolation", "MelBandRoformer")
 
 
-def get_model_path() -> str:
+def get_model_path(settings: Optional[ModelLoadingSettings] = None) -> str:
     """Get the path to the vocal isolation model, downloading if necessary."""
-    model_dir = Path(DEFAULT_MODEL_DIR)
+    settings = settings or settings_from_args()
+    model_dir = settings.models_dir / "vocal_isolation" / "MelBandRoformer"
     model_path = model_dir / MODEL_FILENAME
     
     if not model_path.exists():
+        if settings.hf_offline:
+            raise RuntimeError(f"Vocal isolation weights are missing at {model_path}; HF offline mode prohibits downloads")
+        if not settings.allow_support_downloads:
+            raise RuntimeError(
+                f"Vocal isolation weights are missing at {model_path}; enable VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS "
+                "or place MelBandRoformer.ckpt in models/vocal_isolation/MelBandRoformer."
+            )
         print(f"🔽 Vocal isolation model not found. Downloading from HuggingFace...")
-        download_model(model_dir)
+        download_model(model_dir, settings)
     
     return str(model_path)
 
 
-def download_model(model_dir: Path) -> None:
+def download_model(model_dir: Path, settings=None) -> None:
     """Download the Mel-Band-Roformer model from HuggingFace."""
+    settings = settings or settings_from_args()
+    if settings.hf_offline:
+        raise RuntimeError("HF offline mode prohibits downloading the vocal isolation model")
+    if not settings.allow_support_downloads:
+        raise RuntimeError("Supporting downloads are disabled by VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS")
     try:
         from huggingface_hub import hf_hub_download
     except ImportError:
@@ -83,7 +97,8 @@ def download_model(model_dir: Path) -> None:
             repo_id=HUGGINGFACE_MODEL_ID,
             filename=MODEL_FILENAME,
             local_dir=model_dir,
-            local_dir_use_symlinks=False
+            local_files_only=False,
+            cache_dir=str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
         )
         print(f"✅ Model downloaded successfully to: {downloaded_path}")
     except Exception as e:
@@ -112,7 +127,8 @@ class VocalIsolator:
         self,
         model_path: Optional[str] = None,
         device: Optional[str] = None,
-        debug: bool = False
+        debug: bool = False,
+        settings: Optional[ModelLoadingSettings] = None,
     ):
         """
         Initialize the VocalIsolator.
@@ -123,6 +139,7 @@ class VocalIsolator:
             debug: Enable debug logging
         """
         self.debug = debug
+        self.model_settings = settings or settings_from_args()
         self.model = None
         self.model_sample_rate = 44100  # Mel-Band-Roformer expects 44100Hz
         
@@ -142,7 +159,7 @@ class VocalIsolator:
             self.device = torch.device(device)
         
         # Get model path (downloads if necessary)
-        self.model_path = model_path if model_path else get_model_path()
+        self.model_path = model_path if model_path else get_model_path(self.model_settings)
         
         # Track initialization state and errors
         self._initialized = False
@@ -426,7 +443,8 @@ def isolate_vocals(
     sample_rate: int = 24000,
     device: Optional[str] = None,
     return_instrumental: bool = False,
-    debug: bool = False
+    debug: bool = False,
+    settings: Optional[ModelLoadingSettings] = None,
 ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """
     Convenience function to isolate vocals from audio.
@@ -449,7 +467,7 @@ def isolate_vocals(
     global _global_isolator
     
     if _global_isolator is None:
-        _global_isolator = VocalIsolator(device=device, debug=debug)
+        _global_isolator = VocalIsolator(device=device, debug=debug, settings=settings)
     
     return _global_isolator.isolate(audio, sample_rate, return_instrumental)
 

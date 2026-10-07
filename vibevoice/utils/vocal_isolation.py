@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Union
 from functools import partial
 from tqdm import tqdm
-from vibevoice.model_loading import ModelLoadingSettings, settings_from_args
+from vibevoice.runtime.model_loading import ModelLoadingSettings, settings_from_args
 
 # Model configuration matching ComfyUI's tested settings
 MEL_BAND_ROFORMER_CONFIG = {

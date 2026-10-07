@@ -558,7 +558,7 @@ class VibeVoiceProcessor:
         """
         with open(text_file, 'r', encoding='utf-8') as f:
             content = f.read()
-        from vibevoice.script import parse_script
+        from vibevoice.runtime.script import parse_script
         return "\n".join(
             f"Speaker {speaker + 1}: {text}"
             for speaker, text in parse_script(content)
@@ -566,7 +566,7 @@ class VibeVoiceProcessor:
 
     def _parse_script(self, script: str) -> List[Tuple[int, str]]:
         """Parse script into list of (speaker_id, text) tuples."""
-        from vibevoice.script import parse_script
+        from vibevoice.runtime.script import parse_script
         return [(speaker, ' ' + text) for speaker, text in parse_script(script)]
 
     def _merge_inputs(self, text_inputs: BatchEncoding, audio_inputs: Dict) -> BatchEncoding:

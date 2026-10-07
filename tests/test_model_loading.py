@@ -6,8 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import vibevoice.model_loading as loading
-from vibevoice.model_loading import ModelLoadingSettings
+import vibevoice.runtime.model_loading as loading
+from vibevoice.runtime.model_loading import ModelLoadingSettings
 
 
 def write_model(path: Path, hidden_size: int = 1536, *, complete: bool = True,

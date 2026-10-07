@@ -21,7 +21,7 @@ from vibevoice.modular.modeling_vibevoice_inference import (
     _refresh_negative_cache_for_speech_start,
 )
 import vibevoice.modular.modeling_vibevoice_inference as inference
-from vibevoice.model_loading import ModelLoadingSettings, load_model_and_processor
+from vibevoice.runtime.model_loading import ModelLoadingSettings, load_model_and_processor
 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
 
 
@@ -118,7 +118,7 @@ class Transformers5CompatibilityTests(unittest.TestCase):
             del quantized
             settings = ModelLoadingSettings(root)
             with (
-                patch("vibevoice.model_loading.resolve_tokenizer_path", return_value=q8_dir),
+                patch("vibevoice.runtime.model_loading.resolve_tokenizer_path", return_value=q8_dir),
                 patch.object(VibeVoiceProcessor, "from_pretrained", return_value=object()),
             ):
                 _, loaded, _ = load_model_and_processor(

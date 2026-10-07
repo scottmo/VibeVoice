@@ -7,10 +7,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import main
-from vibevoice.asr import discover_asr_models, run_transcription, validate_asr_model
-from vibevoice.asr_worker import normalize_result
+from vibevoice.asr.service import discover_asr_models, run_transcription, validate_asr_model
+from vibevoice.asr.worker import normalize_result
 from vibevoice.processor.vibevoice_processor import VibeVoiceProcessor
-from vibevoice.script import normalize_script, parse_script, resolve_seed
+from vibevoice.runtime.script import normalize_script, parse_script, resolve_seed
 
 
 class SpeakerTests(unittest.TestCase):
@@ -62,7 +62,7 @@ class SpeakerTests(unittest.TestCase):
 class SeedTests(unittest.TestCase):
     def test_seed_validation_and_random_resolution(self):
         self.assertEqual(resolve_seed(123), 123)
-        with patch("vibevoice.script.secrets.randbelow", return_value=321):
+        with patch("vibevoice.runtime.script.secrets.randbelow", return_value=321):
             self.assertEqual(resolve_seed(0), 322)
         for value in (None, -1, 2**32, 1.5, float("nan")):
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -97,7 +97,7 @@ class SeedTests(unittest.TestCase):
         requests.put(("shutdown", None))
         model, processor, streamer = Mock(), Mock(return_value={}), Mock()
         streamer.get_stream.return_value = iter([[0.1, 0.2]])
-        with patch("vibevoice.model_loading.load_model_and_processor", return_value=(processor, model, None)), \
+        with patch("vibevoice.runtime.model_loading.load_model_and_processor", return_value=(processor, model, None)), \
              patch("vibevoice.modular.streamer.AudioStreamer", return_value=streamer), \
              patch.object(main, "set_seed") as seed:
             main.model_worker_process(requests, responses, "fake-model", "cpu", 5, None, "sdpa")
@@ -138,7 +138,7 @@ class ASRTests(unittest.TestCase):
                 self.assertEqual(request["context"], "Names")
                 Path(command[-1]).write_text(json.dumps(payload))
                 return SimpleNamespace(returncode=0)
-            with patch("vibevoice.asr.asr_python", return_value=Path("python")), patch("vibevoice.asr.subprocess.run", side_effect=worker):
+            with patch("vibevoice.asr.service.asr_python", return_value=Path("python")), patch("vibevoice.asr.service.subprocess.run", side_effect=worker):
                 self.assertEqual(run_transcription(audio, model, "cpu", "Names"), payload)
                 payload = {"error": "out of memory"}
                 with self.assertRaisesRegex(RuntimeError, "out of memory"):

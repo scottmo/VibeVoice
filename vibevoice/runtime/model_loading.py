@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL_REPOSITORIES = {
     "microsoft/VibeVoice-1.5B": {
         "folder": "VibeVoice-1.5B",

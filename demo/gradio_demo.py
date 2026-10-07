@@ -21,7 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 # Load .env before Gradio, Transformers, or Hugging Face modules are imported.
-from vibevoice.model_loading import (
+from vibevoice.runtime.model_loading import (
     add_model_cli_arguments,
     default_model_name,
     launch_compatibly,

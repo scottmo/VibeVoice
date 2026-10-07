@@ -3,7 +3,6 @@ VibeVoice Gradio Demo - High-Quality Dialogue Generation Interface with Streamin
 """
 
 import argparse
-import html as html_utils
 import json
 import os
 import time
@@ -12,7 +11,7 @@ from typing import Iterator, Tuple, Optional
 
 # Load the project .env before importing Transformers/Hugging Face modules,
 # which read HF_* environment switches during import.
-from vibevoice.model_loading import (
+from vibevoice.runtime.model_loading import (
     DEFAULT_MODEL_REPOSITORIES,
     ModelLoadingSettings,
     default_model_name,
@@ -73,8 +72,14 @@ from vibevoice.modular.streamer import AudioStreamer
 from vibevoice.utils.vocal_isolation import VocalIsolator, clear_vocal_isolator_cache
 from transformers.utils import logging
 from transformers import set_seed
-from vibevoice.script import normalize_script, resolve_seed
-from vibevoice.asr import asr_python, discover_asr_models, run_transcription
+from vibevoice.runtime.script import normalize_script, resolve_seed
+from vibevoice.asr.service import asr_python, discover_asr_models, run_transcription
+from vibevoice.realtime.ui import build_realtime_controls
+from vibevoice.runtime.native_select import (
+    native_select_reader_js,
+    render_native_select,
+    select_values_js,
+)
 
 logging.set_verbosity_info()
 logger = logging.get_logger(__name__)
@@ -418,7 +423,7 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
         
         # Import vibevoice modules - use correct paths
         print(f"[Worker] Attempting to import vibevoice modules...")
-        from vibevoice.model_loading import load_model_and_processor
+        from vibevoice.runtime.model_loading import load_model_and_processor
         
         print(f"[Worker] Loading model {model_path} in child process (PID: {os.getpid()})")
         processor, model, _resolved = load_model_and_processor(
@@ -1613,62 +1618,10 @@ class VibeVoiceDemo:
 def create_demo_interface(demo_instance: VibeVoiceDemo):
     """Create the Gradio interface with streaming support."""
 
-    def render_native_select(select_id, label, choices, selected_value=None, info=None, empty_message=None):
-        """Render an accessible, escaped native select for the Gradio HTML component."""
-        choice_values = [str(choice) for choice in choices]
-        selected_value = str(selected_value) if selected_value is not None else None
-        if selected_value not in choice_values:
-            selected_value = choice_values[0] if choice_values else None
-
-        escaped_id = html_utils.escape(str(select_id), quote=True)
-        escaped_label = html_utils.escape(str(label), quote=True)
-        help_id = f"{escaped_id}-help"
-        if choice_values:
-            options = "".join(
-                f'<option value="{html_utils.escape(choice, quote=True)}"'
-                f'{" selected" if choice == selected_value else ""}>'
-                f'{html_utils.escape(choice)}</option>'
-                for choice in choice_values
-            )
-            disabled = ""
-            help_text = info or "Choose an option from the list."
-        else:
-            options = ""
-            disabled = " disabled"
-            help_text = info or empty_message or "No options are available."
-
-        escaped_help = html_utils.escape(str(help_text))
-        return (
-            '<div class="native-select-widget">'
-            f'<label class="native-select-label" for="{escaped_id}">{escaped_label}</label>'
-            f'<select class="native-select" id="{escaped_id}" aria-describedby="{help_id}"{disabled}>'
-            f'{options}</select>'
-            f'<p class="native-select-help" id="{help_id}">{escaped_help}</p>'
-            '</div>'
-        )
-
     def selected_choice(choices, preferred):
         """Keep a preferred option when present, otherwise use the first valid choice."""
         choices = [str(choice) for choice in choices]
         return preferred if preferred in choices else (choices[0] if choices else None)
-
-    def native_select_reader_js(select_ids, input_indexes):
-        """Build JS that reads live selects and falls back to their latest markup."""
-        return (
-            f"const selectIds = {json.dumps(list(select_ids))}; "
-            f"const inputIndexes = {json.dumps(list(input_indexes))}; "
-            "const readSelect = (id, inputIndex) => { "
-            "const live = document.getElementById(id); "
-            "if (live) return live.value; "
-            "const parsed = new DOMParser().parseFromString(values[inputIndex] || '', 'text/html'); "
-            "return parsed.getElementById(id)?.value ?? ''; "
-            "}; "
-            "const selected = selectIds.map((id, index) => readSelect(id, inputIndexes[index])); "
-        )
-
-    def select_values_js(select_ids, input_indexes):
-        """Return native select values in the same order as event inputs."""
-        return f"(...values) => {{ {native_select_reader_js(select_ids, input_indexes)} return selected; }}"
 
     speaker_select_ids = [f"speaker-select-{i + 1}" for i in range(4)]
     model_select_id = "model-select"
@@ -2399,6 +2352,7 @@ Or paste plain text directly and it will auto-assign speakers.""",
         )
         
         # Main generation function with streaming
+        realtime_controller = build_realtime_controls(demo_instance, interface)
         # ASR has separate input/output controls and never appears in the TTS selector.
         with gr.Accordion("🎧 ASR — Audio Transcription", open=False):
             asr_models = discover_asr_models(demo_instance.model_settings)
@@ -2420,6 +2374,7 @@ Or paste plain text directly and it will auto-assign speakers.""",
                     raise ValueError("Select a local ASR model before transcribing.")
                 asr_python()  # Check the runtime before releasing the current TTS model.
                 yield "", [], "Loading ASR and transcribing…"
+                realtime_controller.unload()
                 if demo_instance.model_loaded:
                     demo_instance.unload_model()
                 payload = run_transcription(audio_path, asr_models[selected_model], demo_instance.device, context)
@@ -2435,6 +2390,7 @@ Or paste plain text directly and it will auto-assign speakers.""",
             """Wrapper function to handle the streaming generation call."""
             try:
                 # Load when generating if needed (including after ASR unloads TTS).
+                realtime_controller.unload()
                 demo_instance.ensure_model_loaded()
 
                 # Extract speakers and parameters
@@ -2572,6 +2528,7 @@ Or paste plain text directly and it will auto-assign speakers.""",
                 )
 
             try:
+                realtime_controller.unload()
                 success = demo_instance.switch_model(selected_model)
                 if success:
                     # Update available voices for the new model

@@ -6,7 +6,9 @@ import subprocess
 import sys
 import tempfile
 
-from .model_loading import PROJECT_ROOT, _checkpoint_files, _model_config
+from vibevoice.runtime.model_loading import _checkpoint_files, _model_config
+
+ASR_WORKER = Path(__file__).resolve().with_name("worker.py")
 
 
 def validate_asr_model(path):
@@ -41,7 +43,7 @@ def discover_asr_models(settings):
 def asr_python(check=True):
     python = Path(sys.executable).resolve()
     if check:
-        completed = subprocess.run([str(python), str(PROJECT_ROOT / "vibevoice" / "asr_worker.py"), "--check"],
+        completed = subprocess.run([str(python), str(ASR_WORKER), "--check"],
                                    capture_output=True, text=True)
         if completed.returncode:
             raise RuntimeError(
@@ -65,7 +67,7 @@ def run_transcription(audio_path, model_path, device, context=""):
         }), encoding="utf-8")
         # Logs go to the terminal. The result has its own JSON file, so logs can
         # never corrupt the protocol. Process exit releases the complete ASR model.
-        completed = subprocess.run([str(python), str(PROJECT_ROOT / "vibevoice" / "asr_worker.py"),
+        completed = subprocess.run([str(python), str(ASR_WORKER),
                                     str(request), str(result)])
         if not result.is_file():
             raise RuntimeError(f"ASR worker exited without a result (code {completed.returncode}). See the terminal log.")

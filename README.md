@@ -112,6 +112,21 @@ ASR runs in a disposable subprocess from that same Python environment so its mod
 
 ASR releases the loaded TTS model before loading its own checkpoint. CUDA placement uses automatic CPU offload with a GPU memory reserve; CPU/MPS follow the app's selected device. The ASR process exits after each request, and TTS reloads on the next generation. Transcription, TTS generation and model switching share one queue to prevent overlapping model operations. Optional context/hotwords can guide recognition. If the model output cannot be parsed, the raw text is retained with a status message rather than inventing timestamps.
 
+### Realtime TTS
+
+Open the **Realtime TTS — Single Speaker** accordion, select a realtime model and cached voice preset using the native selects, enter one text submission, then choose **Generate Realtime Speech**. Audio streams in roughly half-second chunks at 24 kHz; the completed audio is also available to download. The seed defaults to 42, with `0` selecting a random seed. CFG ranges from 1.5 to 3.0 (default 1.5), and diffusion steps range from 1 to 50 (default 5). Refresh Realtime Assets after adding local files.
+
+The [official VibeVoice-Realtime-0.5B checkpoint](https://huggingface.co/microsoft/VibeVoice-Realtime-0.5B) and 25 [official cached voice presets](https://github.com/microsoft/VibeVoice/tree/1541f590c7099820f10ea012f48d2399282df69f/demo/voices/streaming_model) are selectable before installation. First use downloads missing model files, the Qwen2.5-0.5B tokenizer, and only the selected voice preset. Later uses reuse local assets under the configured `VIBEVOICE_MODELS_DIR`. Complete custom realtime checkpoints can be added under `tts/`, and custom `.pt` prompts anywhere under `voices/realtime/`; nested voice folders become part of the selector name. A bundled `tokenizer.json` takes priority over the shared tokenizer directory.
+
+```text
+<VIBEVOICE_MODELS_DIR>/
+  tts/VibeVoice-Realtime-0.5B/
+  tokenizers/Qwen2.5-0.5B/   # only when tokenizer files are not in the checkpoint
+  voices/realtime/<voice>.pt
+```
+
+Realtime is a separate single-speaker model family and uses its selected cached prompt. In `--lod` mode, a disposable worker streams bounded audio chunks and is stopped and cleaned up with the request.
+
 ### 🔄 Load-on-Demand (LOD) Mode Architecture
 
 The `--lod` flag enables a specialized worker-based architecture that provides **true VRAM cleanup** after each generation:

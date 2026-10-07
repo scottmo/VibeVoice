@@ -1979,7 +1979,7 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     """
     
     with gr.Blocks(
-        title="VibeVoice - Dialogue Audio Generator",
+        title="VibeVoice - Speech Generation and Transcription",
         css=custom_css,
         head=theme_head,
         theme=gr.themes.Soft(
@@ -2033,338 +2033,339 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         # Header
         gr.HTML("""
         <div class="main-header">
-            <h1>🎙️ VibeVoice Dialogue Generation</h1>
-            <p>Generate long-form multi-speaker dialogue audio with VibeVoice</p>
+            <h1>🎙️ VibeVoice</h1>
+            <p>Generate speech and transcribe audio with VibeVoice</p>
         </div>
         """)
         
-        with gr.Row():
-            # Left column - Settings
-            with gr.Column(scale=1, elem_classes="settings-card"):
-                gr.Markdown("### 🎛️ **Audio Settings**")
-                
-                # Number of speakers
-                num_speakers = gr.Slider(
-                    minimum=1,
-                    maximum=4,
-                    value=2,
-                    step=1,
-                    label="Number of Speakers",
-                    elem_classes="slider-container"
-                )
-                
-                # Speaker selection
-                gr.Markdown("### 🎭 **Speaker Selection**")
-                
-                available_speaker_names = list(demo_instance.available_voices.keys())
-                default_speakers = ['en-Alice_woman', 'en-Carter_man', 'en-Frank_man', 'en-Maya_woman']
-
-                speaker_selections = []
-                for i in range(4):
-                    default_value = default_speakers[i] if i < len(default_speakers) else None
-                    speaker_label = f"Speaker {i + 1}"
-                    speaker = gr.HTML(
-                        value=render_speaker_select(i, available_speaker_names, default_value),
-                        label=speaker_label,
-                        show_label=False,
-                        visible=(i < 2) if i < 2 else "hidden",  # Keep hidden selects in the DOM for value retention.
-                        elem_classes="speaker-item",
-                        elem_id=f"speaker-select-field-{i + 1}",
-                        min_height=0,
-                        padding=False,
-                    )
-                    speaker_selections.append(speaker)
-                # Refresh voices button
-                refresh_voices_btn = gr.Button(
-                    "🔄 Refresh Voices",
-                    variant="secondary"
-                )
-                
-                # Voice Input Settings
-                with gr.Accordion("🎤 Voice Input Settings", open=False):
-                    isolate_voices = gr.Checkbox(
-                        value=True,
-                        label="Isolate input voices",
-                        info="Remove background music/noise from voice samples using AI vocal isolation (recommended)"
-                    )
-                    normalize_voices = gr.Checkbox(
-                        value=False,
-                        label="Normalize voices",
-                        info="Normalize all voice samples to similar volume levels to prevent jarring volume differences"
-                    )
-                
-                # Output Settings
-                with gr.Accordion("💾 Output Settings", open=False):
-                    save_output = gr.Checkbox(
-                        value=True,
-                        label="Save generated audio to output folder",
-                        info="Automatically save generated audio to output/ directory with timestamp and speaker names"
-                    )
-                
-                # Model selector
-                gr.Markdown("### 🤖 **Model Selection**")
-                model_choices = list(demo_instance.available_models.keys())
-                selected_model = demo_instance.model_path if demo_instance.model_path in demo_instance.available_models else (model_choices[0] if model_choices else None)
-                model_selector = gr.HTML(
-                    value=render_model_select(model_choices, selected_model),
-                    label="Select Model",
-                    show_label=False,
-                    elem_id="model-select-field",
-                    elem_classes="model-select-field",
-                    min_height=0,
-                    padding=False,
-                )
-
-                load_model_btn = gr.Button(
-                    "🔄 Load Selected Model",
-                    variant="secondary",
-                    elem_classes="model-btn"
-                )
-
-                # Advanced settings
-                gr.Markdown("### ⚙️ **Advanced Settings**")
-                
-                # Sampling parameters (contains all generation settings)
-                with gr.Accordion("Generation Parameters", open=False):
-                    seed_input = gr.Number(
-                        value=42, precision=0, minimum=0, maximum=4294967295,
-                        label="Seed", info="Use the same positive seed to repeat a run; 0 chooses a random seed shown in the log.",
-                    )
-                    cfg_scale = gr.Slider(
-                        minimum=1.0,
-                        maximum=2.0,
-                        value=1.6,
-                        step=0.05,
-                        label="CFG Scale (Guidance Strength)",
-                        # info="Higher values increase adherence to text",
-                        elem_classes="slider-container"
-                    )
-                    ddpm_steps = gr.Slider(
-                        minimum=5,
-                        maximum=30,
-                        value=demo_instance.inference_steps,
-                        step=1,
-                        label="Diffusion Steps (quality vs speed)",
-                        elem_classes="slider-container"
-                    )
-                    do_sample = gr.Checkbox(
-                        value=True,
-                        label="Enable sampling (adds variability)",
-                    )
-                    temperature = gr.Slider(
-                        minimum=0.1,
-                        maximum=1.5,
-                        value=0.95,
-                        step=0.05,
-                        label="Temperature",
-                        elem_classes="slider-container"
-                    )
-                    top_p = gr.Slider(
-                        minimum=0.0,
-                        maximum=1.0,
-                        value=0.95,
-                        step=0.01,
-                        label="Top-p",
-                        elem_classes="slider-container"
-                    )
-                    top_k = gr.Slider(
-                        minimum=0,
-                        maximum=100,
-                        value=0,
-                        step=1,
-                        label="Top-k",
-                        elem_classes="slider-container"
-                    )
-                    negative_prompt = gr.Textbox(
-                        label="Negative Prompt (optional)",
-                        placeholder="Words or patterns to avoid...",
-                        lines=2,
-                        max_lines=4,
-                        value=""
-                    )
-                
-            # Right column - Generation
-            with gr.Column(scale=2, elem_classes="generation-card"):
-                gr.Markdown("### 📝 **Script Input**")
-                
-                script_input = gr.Textbox(
-                    label="Conversation Script",
-                    placeholder="""Enter your dialogue script here. You can format it as:
-
-[1] Welcome to our conversation today!
-[2] Thanks for having me. I'm excited to discuss...
-
-Speaker 1: Text is also supported. Unlabelled text after a marker continues that turn.
-Or paste plain text directly and it will auto-assign speakers.""",
-                    lines=18,
-                    max_lines=40,
-                    elem_classes="script-input"
-                )
-                
-                # Generate Audio Button (full width)
-                generate_btn = gr.Button(
-                    "🚀 Generate Audio",
-                    size="lg",
-                    variant="primary",
-                    elem_classes="generate-btn"
-                )
-                
-                # Stop button
-                stop_btn = gr.Button(
-                    "🛑 Stop Generation",
-                    size="lg",
-                    variant="stop",
-                    elem_classes="stop-btn",
-                    visible=False
-                )
-                
-                # Streaming status indicator
-                streaming_status = gr.HTML(
-                    value="""
-                    <div style="background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%); 
-                                border: 1px solid rgba(34, 197, 94, 0.3); 
-                                border-radius: 8px; 
-                                padding: 0.75rem; 
-                                margin: 0.5rem 0;
-                                text-align: center;
-                                font-size: 0.9rem;
-                                color: #166534;">
-                        <span class="streaming-indicator"></span>
-                        <strong>LIVE STREAMING</strong> - Audio is being generated in real-time
-                    </div>
-                    """,
-                    visible=False,
-                    elem_id="streaming-status"
-                )
-                
-                # Output section
-                gr.Markdown("### 🎵 **Generated Audio**")
-                
-                # Streaming audio output (outside of tabs for simpler handling)
-                # Build kwargs conditionally based on Gradio version
-                streaming_audio_kwargs = {
-                    "label": "Streaming Audio (Real-time)",
-                    "type": "numpy",
-                    "elem_classes": "audio-output",
-                    "streaming": True,
-                    "autoplay": True,
-                    "visible": True
-                }
-                if GRADIO_HAS_SHOW_DOWNLOAD:
-                    streaming_audio_kwargs["show_download_button"] = False
-                
-                audio_output = gr.Audio(**streaming_audio_kwargs)
-                
-                # Complete audio output (non-streaming)
-                complete_audio_kwargs = {
-                    "label": "Complete Audio (Download after generation)",
-                    "type": "numpy",
-                    "elem_classes": "audio-output complete-audio-section",
-                    "streaming": False,
-                    "autoplay": False,
-                    "visible": False,
-                    "elem_id": "complete-audio-output"
-                }
-                if GRADIO_HAS_SHOW_DOWNLOAD:
-                    complete_audio_kwargs["show_download_button"] = True
-                
-                complete_audio_output = gr.Audio(**complete_audio_kwargs)
-                
-                # Simple gain control for the audio player
+        with gr.Tabs():
+            with gr.Tab("TTS"):
                 with gr.Row():
-                    gain_control = gr.Slider(
-                        minimum=-20.0,
-                        maximum=20.0,
-                        value=0.0,
-                        step=0.1,
-                        label="Gain (dB)",
-                        elem_id="gain-control",
-                        interactive=True
-                    )
-                    
-                    gain_reset_btn = gr.Button(
-                        value="Reset",
-                        variant="secondary",
-                        size="sm",
-                        elem_id="gain-reset-btn"
-                    )
-                
-                gr.Markdown("""
-                *💡 **Streaming**: Audio plays as it's being generated (may have slight pauses)  
-                *💡 **Complete Audio**: Will appear below after generation finishes*
-                """)
-                
-                # Generation log
-                log_output = gr.Textbox(
-                    label="Generation Log",
-                    value=("" if demo_instance.model_loaded else
-                           "No model loaded. Select a model and click Load Selected Model when ready."),
-                    lines=8,
-                    max_lines=15,
-                    interactive=False,
-                    elem_classes="log-output"
-                )
-                
-        def update_speaker_visibility(num_speakers, *selected_speakers):
-            current_choices = list(demo_instance.available_voices.keys())
-            return [
-                gr.update(
-                    value=render_speaker_select(
-                        index,
-                        current_choices,
-                        selected_speakers[index] if index < len(selected_speakers) else None,
-                    ),
-                    visible=(index < int(num_speakers)) if index < int(num_speakers) else "hidden",
-                )
-                for index in range(4)
-            ]
-        
-        # Refresh the list of voices from disk and update the native selects.
-        def refresh_voices(*selected_speakers):
-            demo_instance.setup_voice_presets()
-            new_choices = list(demo_instance.available_voices.keys())
-            return [
-                render_speaker_select(
-                    index,
-                    new_choices,
-                    selected_speakers[index] if index < len(selected_speakers) else None,
-                )
-                for index in range(4)
-            ]
-        
-        num_speakers.change(
-            fn=update_speaker_visibility,
-            inputs=[num_speakers] + speaker_selections,
-            outputs=speaker_selections,
-            js=(
-                f"(...values) => {{ {native_select_reader_js(speaker_select_ids, [1, 2, 3, 4])} "
-                "return [values[0], ...selected]; }"
-            ),
-        )
+                    # Left column - Settings
+                    with gr.Column(scale=1, elem_classes="settings-card"):
+                        gr.Markdown("### 🎛️ **Audio Settings**")
 
-        # Wire refresh button to update dropdown choices
-        refresh_voices_btn.click(
-            fn=refresh_voices,
-            inputs=speaker_selections,
-            outputs=speaker_selections,
-            js=select_values_js(speaker_select_ids, [0, 1, 2, 3]),
-            queue=False
-        )
-        
-        # Main generation function with streaming
-        realtime_controller = build_realtime_controls(demo_instance, interface)
-        # ASR has separate input/output controls and never appears in the TTS selector.
-        with gr.Accordion("🎧 ASR — Audio Transcription", open=False):
-            asr_models = discover_asr_models(demo_instance.model_settings)
-            asr_model = gr.Dropdown(choices=list(asr_models), value=next(iter(asr_models), None),
-                                    label="ASR Model", interactive=True)
-            asr_upload = gr.Audio(sources=["upload"], type="filepath", label="Upload Audio")
-            asr_context = gr.Textbox(label="Context / Hotwords (optional)", placeholder="Names or terms that appear in the audio")
-            transcribe_btn = gr.Button("Transcribe", variant="primary")
-            asr_transcript = gr.Textbox(label="Transcript", lines=8, interactive=False)
-            asr_segments = gr.JSON(label="Segments (timestamps and speaker IDs)")
-            asr_status = gr.Textbox(label="Transcription Status", interactive=False,
-                                    value="Ready" if asr_models else "No local VibeVoice-ASR-HF checkpoint found in the model root.")
+                        # Number of speakers
+                        num_speakers = gr.Slider(
+                            minimum=1,
+                            maximum=4,
+                            value=2,
+                            step=1,
+                            label="Number of Speakers",
+                            elem_classes="slider-container"
+                        )
+
+                        # Speaker selection
+                        gr.Markdown("### 🎭 **Speaker Selection**")
+
+                        available_speaker_names = list(demo_instance.available_voices.keys())
+                        default_speakers = ['en-Alice_woman', 'en-Carter_man', 'en-Frank_man', 'en-Maya_woman']
+
+                        speaker_selections = []
+                        for i in range(4):
+                            default_value = default_speakers[i] if i < len(default_speakers) else None
+                            speaker_label = f"Speaker {i + 1}"
+                            speaker = gr.HTML(
+                                value=render_speaker_select(i, available_speaker_names, default_value),
+                                label=speaker_label,
+                                show_label=False,
+                                visible=(i < 2) if i < 2 else "hidden",  # Keep hidden selects in the DOM for value retention.
+                                elem_classes="speaker-item",
+                                elem_id=f"speaker-select-field-{i + 1}",
+                                min_height=0,
+                                padding=False,
+                            )
+                            speaker_selections.append(speaker)
+                        # Refresh voices button
+                        refresh_voices_btn = gr.Button(
+                            "🔄 Refresh Voices",
+                            variant="secondary"
+                        )
+
+                        # Voice Input Settings
+                        with gr.Accordion("🎤 Voice Input Settings", open=False):
+                            isolate_voices = gr.Checkbox(
+                                value=True,
+                                label="Isolate input voices",
+                                info="Remove background music/noise from voice samples using AI vocal isolation (recommended)"
+                            )
+                            normalize_voices = gr.Checkbox(
+                                value=False,
+                                label="Normalize voices",
+                                info="Normalize all voice samples to similar volume levels to prevent jarring volume differences"
+                            )
+
+                        # Output Settings
+                        with gr.Accordion("💾 Output Settings", open=False):
+                            save_output = gr.Checkbox(
+                                value=True,
+                                label="Save generated audio to output folder",
+                                info="Automatically save generated audio to output/ directory with timestamp and speaker names"
+                            )
+
+                        # Model selector
+                        gr.Markdown("### 🤖 **Model Selection**")
+                        model_choices = list(demo_instance.available_models.keys())
+                        selected_model = demo_instance.model_path if demo_instance.model_path in demo_instance.available_models else (model_choices[0] if model_choices else None)
+                        model_selector = gr.HTML(
+                            value=render_model_select(model_choices, selected_model),
+                            label="Select Model",
+                            show_label=False,
+                            elem_id="model-select-field",
+                            elem_classes="model-select-field",
+                            min_height=0,
+                            padding=False,
+                        )
+
+                        load_model_btn = gr.Button(
+                            "🔄 Load Selected Model",
+                            variant="secondary",
+                            elem_classes="model-btn"
+                        )
+
+                        # Advanced settings
+                        gr.Markdown("### ⚙️ **Advanced Settings**")
+
+                        # Sampling parameters (contains all generation settings)
+                        with gr.Accordion("Generation Parameters", open=False):
+                            seed_input = gr.Number(
+                                value=42, precision=0, minimum=0, maximum=4294967295,
+                                label="Seed", info="Use the same positive seed to repeat a run; 0 chooses a random seed shown in the log.",
+                            )
+                            cfg_scale = gr.Slider(
+                                minimum=1.0,
+                                maximum=2.0,
+                                value=1.6,
+                                step=0.05,
+                                label="CFG Scale (Guidance Strength)",
+                                # info="Higher values increase adherence to text",
+                                elem_classes="slider-container"
+                            )
+                            ddpm_steps = gr.Slider(
+                                minimum=5,
+                                maximum=30,
+                                value=demo_instance.inference_steps,
+                                step=1,
+                                label="Diffusion Steps (quality vs speed)",
+                                elem_classes="slider-container"
+                            )
+                            do_sample = gr.Checkbox(
+                                value=True,
+                                label="Enable sampling (adds variability)",
+                            )
+                            temperature = gr.Slider(
+                                minimum=0.1,
+                                maximum=1.5,
+                                value=0.95,
+                                step=0.05,
+                                label="Temperature",
+                                elem_classes="slider-container"
+                            )
+                            top_p = gr.Slider(
+                                minimum=0.0,
+                                maximum=1.0,
+                                value=0.95,
+                                step=0.01,
+                                label="Top-p",
+                                elem_classes="slider-container"
+                            )
+                            top_k = gr.Slider(
+                                minimum=0,
+                                maximum=100,
+                                value=0,
+                                step=1,
+                                label="Top-k",
+                                elem_classes="slider-container"
+                            )
+                            negative_prompt = gr.Textbox(
+                                label="Negative Prompt (optional)",
+                                placeholder="Words or patterns to avoid...",
+                                lines=2,
+                                max_lines=4,
+                                value=""
+                            )
+
+                    # Right column - Generation
+                    with gr.Column(scale=2, elem_classes="generation-card"):
+                        gr.Markdown("### 📝 **Script Input**")
+
+                        script_input = gr.Textbox(
+                            label="Conversation Script",
+                            placeholder="""Enter your dialogue script here. You can format it as:
+
+        [1] Welcome to our conversation today!
+        [2] Thanks for having me. I'm excited to discuss...
+
+        Speaker 1: Text is also supported. Unlabelled text after a marker continues that turn.
+        Or paste plain text directly and it will auto-assign speakers.""",
+                            lines=18,
+                            max_lines=40,
+                            elem_classes="script-input"
+                        )
+
+                        # Generate Audio Button (full width)
+                        generate_btn = gr.Button(
+                            "🚀 Generate Audio",
+                            size="lg",
+                            variant="primary",
+                            elem_classes="generate-btn"
+                        )
+
+                        # Stop button
+                        stop_btn = gr.Button(
+                            "🛑 Stop Generation",
+                            size="lg",
+                            variant="stop",
+                            elem_classes="stop-btn",
+                            visible=False
+                        )
+
+                        # Streaming status indicator
+                        streaming_status = gr.HTML(
+                            value="""
+                            <div style="background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+                                        border: 1px solid rgba(34, 197, 94, 0.3);
+                                        border-radius: 8px;
+                                        padding: 0.75rem;
+                                        margin: 0.5rem 0;
+                                        text-align: center;
+                                        font-size: 0.9rem;
+                                        color: #166534;">
+                                <span class="streaming-indicator"></span>
+                                <strong>LIVE STREAMING</strong> - Audio is being generated in real-time
+                            </div>
+                            """,
+                            visible=False,
+                            elem_id="streaming-status"
+                        )
+
+                        # Output section
+                        gr.Markdown("### 🎵 **Generated Audio**")
+
+                        # Streaming audio output (outside of tabs for simpler handling)
+                        # Build kwargs conditionally based on Gradio version
+                        streaming_audio_kwargs = {
+                            "label": "Streaming Audio (Real-time)",
+                            "type": "numpy",
+                            "elem_classes": "audio-output",
+                            "streaming": True,
+                            "autoplay": True,
+                            "visible": True
+                        }
+                        if GRADIO_HAS_SHOW_DOWNLOAD:
+                            streaming_audio_kwargs["show_download_button"] = False
+
+                        audio_output = gr.Audio(**streaming_audio_kwargs)
+
+                        # Complete audio output (non-streaming)
+                        complete_audio_kwargs = {
+                            "label": "Complete Audio (Download after generation)",
+                            "type": "numpy",
+                            "elem_classes": "audio-output complete-audio-section",
+                            "streaming": False,
+                            "autoplay": False,
+                            "visible": False,
+                            "elem_id": "complete-audio-output"
+                        }
+                        if GRADIO_HAS_SHOW_DOWNLOAD:
+                            complete_audio_kwargs["show_download_button"] = True
+
+                        complete_audio_output = gr.Audio(**complete_audio_kwargs)
+
+                        # Simple gain control for the audio player
+                        with gr.Row():
+                            gain_control = gr.Slider(
+                                minimum=-20.0,
+                                maximum=20.0,
+                                value=0.0,
+                                step=0.1,
+                                label="Gain (dB)",
+                                elem_id="gain-control",
+                                interactive=True
+                            )
+
+                            gain_reset_btn = gr.Button(
+                                value="Reset",
+                                variant="secondary",
+                                size="sm",
+                                elem_id="gain-reset-btn"
+                            )
+
+                        gr.Markdown("""
+                        *💡 **Streaming**: Audio plays as it's being generated (may have slight pauses)<br>
+                        *💡 **Complete Audio**: Will appear below after generation finishes*
+                        """)
+
+                        # Generation log
+                        log_output = gr.Textbox(
+                            label="Generation Log",
+                            value=("" if demo_instance.model_loaded else
+                                   "No model loaded. Select a model and click Load Selected Model when ready."),
+                            lines=8,
+                            max_lines=15,
+                            interactive=False,
+                            elem_classes="log-output"
+                        )
+
+                def update_speaker_visibility(num_speakers, *selected_speakers):
+                    current_choices = list(demo_instance.available_voices.keys())
+                    return [
+                        gr.update(
+                            value=render_speaker_select(
+                                index,
+                                current_choices,
+                                selected_speakers[index] if index < len(selected_speakers) else None,
+                            ),
+                            visible=(index < int(num_speakers)) if index < int(num_speakers) else "hidden",
+                        )
+                        for index in range(4)
+                    ]
+
+                # Refresh the list of voices from disk and update the native selects.
+                def refresh_voices(*selected_speakers):
+                    demo_instance.setup_voice_presets()
+                    new_choices = list(demo_instance.available_voices.keys())
+                    return [
+                        render_speaker_select(
+                            index,
+                            new_choices,
+                            selected_speakers[index] if index < len(selected_speakers) else None,
+                        )
+                        for index in range(4)
+                    ]
+
+                num_speakers.change(
+                    fn=update_speaker_visibility,
+                    inputs=[num_speakers] + speaker_selections,
+                    outputs=speaker_selections,
+                    js=(
+                        f"(...values) => {{ {native_select_reader_js(speaker_select_ids, [1, 2, 3, 4])} "
+                        "return [values[0], ...selected]; }"
+                    ),
+                )
+
+                # Wire refresh button to update dropdown choices
+                refresh_voices_btn.click(
+                    fn=refresh_voices,
+                    inputs=speaker_selections,
+                    outputs=speaker_selections,
+                    js=select_values_js(speaker_select_ids, [0, 1, 2, 3]),
+                    queue=False
+                )
+
+            with gr.Tab("Realtime TTS"):
+                realtime_controller = build_realtime_controls(demo_instance, interface)
+            with gr.Tab("ASR"):
+                asr_models = discover_asr_models(demo_instance.model_settings)
+                asr_model = gr.Dropdown(choices=list(asr_models), value=next(iter(asr_models), None),
+                                        label="ASR Model", interactive=True)
+                asr_upload = gr.Audio(sources=["upload"], type="filepath", label="Upload Audio")
+                asr_context = gr.Textbox(label="Context / Hotwords (optional)", placeholder="Names or terms that appear in the audio")
+                transcribe_btn = gr.Button("Transcribe", variant="primary")
+                asr_transcript = gr.Textbox(label="Transcript", lines=8, interactive=False)
+                asr_segments = gr.JSON(label="Segments (timestamps and speaker IDs)")
+                asr_status = gr.Textbox(label="Transcription Status", interactive=False,
+                                        value="Ready" if asr_models else "No local VibeVoice-ASR-HF checkpoint found in the model root.")
 
         def transcribe_upload(audio_path, selected_model, context):
             try:

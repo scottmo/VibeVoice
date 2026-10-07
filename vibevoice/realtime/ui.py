@@ -189,9 +189,9 @@ class RealtimeController:
 
 def build_realtime_controls(demo, interface):
     controller = RealtimeController(demo)
-    with gr.Accordion("Realtime TTS — Single Speaker", open=False):
+    with gr.Column():
         gr.Markdown(
-            "Generate speech with the realtime 0.5B model and a cached voice preset. Missing assets download on first use. Audio plays while generation runs."
+            "Generate speech with the realtime 0.5B model and a cached voice preset. Missing assets download on first use. Audio plays while generation runs. Note that this requires a good GPU to actually run in realtime."
         )
         with gr.Row():
             model = gr.HTML(

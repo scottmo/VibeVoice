@@ -491,7 +491,7 @@ Copy `.env-sample` to `.env` if you want to set model-loading options in a file.
 python main.py
 ```
 
-After a moment the local interface is available at `http://localhost:7590`. Open it in your browser and you're ready to go.
+The local interface opens automatically in your default browser at `http://localhost:7590` once the server is ready. This also applies when launching with `run_vibevoice.sh` or `run_vibevoice.bat`.
 
 > **Tip:** Add `--lod` for load-on-demand mode, which uses much less VRAM when idle:
 > ```bash

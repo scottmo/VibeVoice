@@ -2642,7 +2642,7 @@ def parse_args():
         "--port",
         type=int,
         default=7590,
-        help="Port to run the demo on (always 7590 for network access)",
+        help="Port to run the demo on (always 7590)",
     )
     parser.add_argument(
         "--debug",
@@ -2674,7 +2674,7 @@ def main():
         print("⚠️  publicly accessible on the internet WITHOUT ANY PROTECTION!")
         print("⚠️  This is HIGHLY ADVISABLE NOT TO DO for security reasons.")
         print("⚠️  Anyone on the internet can access your model and generate audio.")
-        print("⚠️  Consider using --port 7590 instead for local network access only.")
+        print("⚠️  Omit --share to keep the interface accessible only on localhost.")
         print("="*80)
         print("🚨🚨🚨 PROCEEDING WITH PUBLIC SHARING ENABLED 🚨🚨🚨")
         print("="*80 + "\n")
@@ -2706,7 +2706,7 @@ def main():
     # Create interface
     interface = create_demo_interface(demo_instance)
     
-    print(f"🚀 Launching demo on port 7590 (network accessible)")
+    print("🚀 Launching demo at http://localhost:7590")
     print(f"📁 Model path: {model_path}")
     print(f"📂 Model directory: {model_settings.models_dir}")
     print(f"🎭 Available voices: {len(demo_instance.available_voices)}")
@@ -2723,8 +2723,9 @@ def main():
         )
         launch_compatibly(queued,
             share=args.share,
-            server_port=7590,  # Always use port 7590 for network access
-            server_name="0.0.0.0",  # Always serve on network interface
+            server_port=7590,
+            server_name="localhost",
+            inbrowser=True,
             show_error=True,
             show_api=False  # Hide API docs for cleaner interface
         )

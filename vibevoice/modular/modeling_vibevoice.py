@@ -96,23 +96,26 @@ class VibeVoicePreTrainedModel(PreTrainedModel):
             std = 0.02  # Default value
             
         if isinstance(module, nn.Linear):
-            module.weight.data.normal_(mean=0.0, std=std)
+            nn.init.normal_(module.weight, mean=0.0, std=std)
             if module.bias is not None:
-                module.bias.data.zero_()
+                nn.init.zeros_(module.bias)
         elif isinstance(module, nn.LayerNorm):
-            module.weight.data.fill_(1.0)
-            module.bias.data.zero_()
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
 
 # @auto_docstring
 class VibeVoiceModel(VibeVoicePreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         
-        if hasattr(config, 'torch_dtype') and config.torch_dtype is not None:
-            if isinstance(config.torch_dtype, str):
-                dtype = getattr(torch, config.torch_dtype)
+        configured_dtype = getattr(config, 'dtype', None)
+        if configured_dtype is None:
+            configured_dtype = getattr(config, 'torch_dtype', None)
+        if configured_dtype is not None:
+            if isinstance(configured_dtype, str):
+                dtype = getattr(torch, configured_dtype.replace("torch.", ""))
             else:
-                dtype = config.torch_dtype
+                dtype = configured_dtype
         else:
             dtype = torch.float32
         
@@ -135,11 +138,15 @@ class VibeVoiceModel(VibeVoicePreTrainedModel):
         self.prediction_head = AutoModel.from_config(config.diffusion_head_config).to(dtype)
 
         # Initialize noise scheduler
-        self.noise_scheduler = DPMSolverMultistepScheduler(
-            num_train_timesteps=config.diffusion_head_config.ddpm_num_steps,
-            beta_schedule=config.diffusion_head_config.ddpm_beta_schedule,
-            prediction_type=config.diffusion_head_config.prediction_type
-        )
+        # This scheduler stores plain tensors (not parameters/buffers), so an
+        # outer Transformers meta-device context would leave them unusable.
+        # Keep scheduler state on CPU while model weights are constructed.
+        with torch.device("cpu"):
+            self.noise_scheduler = DPMSolverMultistepScheduler(
+                num_train_timesteps=config.diffusion_head_config.ddpm_num_steps,
+                beta_schedule=config.diffusion_head_config.ddpm_beta_schedule,
+                prediction_type=config.diffusion_head_config.prediction_type
+            )
     
     def get_input_embeddings(self):
         if hasattr(self.language_model, 'embed_tokens'):
@@ -210,7 +217,7 @@ class VibeVoiceModel(VibeVoicePreTrainedModel):
 
 
 class VibeVoiceForConditionalGeneration(VibeVoicePreTrainedModel):
-    _tied_weights_keys = ["lm_head.weight"]
+    _tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
     _tp_plan = {"lm_head": "colwise_rep"}
 
     def __init__(self, config):
@@ -236,7 +243,7 @@ class VibeVoiceForConditionalGeneration(VibeVoicePreTrainedModel):
     def get_decoder(self):
         return self.model.language_model
 
-    def tie_weights(self):
+    def tie_weights(self, missing_keys=None, recompute_mapping=True, **kwargs):
         """
         Tie the weights between the input embeddings and the output embeddings.
         """

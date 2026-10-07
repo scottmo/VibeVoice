@@ -180,9 +180,10 @@ class ModelLoadingTests(unittest.TestCase):
             received.update(kwargs)
             return fake_model
 
+        config = VibeVoiceConfig.from_dict(json.loads((model_dir / "config.json").read_text()))
         with (
             patch.object(VibeVoiceProcessor, "from_pretrained", return_value=object()),
-            patch.object(VibeVoiceConfig, "from_pretrained", return_value=MagicMock()),
+            patch.object(VibeVoiceConfig, "from_pretrained", return_value=config),
             patch.object(VibeVoiceForConditionalGenerationInference, "from_pretrained", side_effect=fake_load),
         ):
             _processor, model, _resolved = loading.load_model_and_processor(
@@ -193,9 +194,10 @@ class ModelLoadingTests(unittest.TestCase):
             )
 
         self.assertIs(model, fake_model)
-        self.assertEqual(received["torch_dtype"], torch.bfloat16)
-        self.assertIsInstance(received["quantization_config"], BitsAndBytesConfig)
-        self.assertEqual(received["quantization_config"].llm_int8_skip_modules, ["audio_decoder"])
+        self.assertEqual(received["dtype"], torch.bfloat16)
+        self.assertNotIn("quantization_config", received)
+        self.assertEqual(received["config"].quantization_config["llm_int8_skip_modules"], ["audio_decoder"])
+        self.assertTrue(BitsAndBytesConfig.from_dict(received["config"].quantization_config).load_in_8bit)
 
     def test_huggingface_download_uses_canonical_project_destination_and_reuses_assets(self):
         settings = self.settings("huggingface")

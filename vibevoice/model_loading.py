@@ -510,13 +510,28 @@ def _quantization_config(model_config: dict[str, Any], forced_config: Optional[d
     try:
         import torch
         normalized = dict(config)
+        # Transformers 4 matched these short names at every recursion level.
+        # Transformers 5 matches full paths instead, so an acoustic_tokenizer
+        # exclusion otherwise misses model.acoustic_tokenizer.encoder.*.
+        # Keep the original entries and add explicit paths for VibeVoice's
+        # speech components; their serialized weights are not quantized.
+        skip_modules = normalized.get("llm_int8_skip_modules")
+        if skip_modules is not None:
+            speech_modules = {
+                "acoustic_tokenizer", "semantic_tokenizer",
+                "acoustic_connector", "semantic_connector", "prediction_head",
+            }
+            normalized["llm_int8_skip_modules"] = list(dict.fromkeys([
+                *skip_modules,
+                *(f"model.{name}" for name in skip_modules if name in speech_modules),
+            ]))
         dtype_value = normalized.get("bnb_4bit_compute_dtype")
         if isinstance(dtype_value, str):
             normalized["bnb_4bit_compute_dtype"] = getattr(torch, dtype_value.rsplit(".", 1)[-1], None)
             if normalized["bnb_4bit_compute_dtype"] is None:
                 raise ValueError(f"Unsupported bnb_4bit_compute_dtype: {dtype_value}")
         # Older checkpoints serialize private transformers flags as well as
-        # public options; from_dict handles both across the pinned 4.51 release.
+        # public options; from_dict handles both across the pinned release.
         return BitsAndBytesConfig.from_dict(normalized)
     except Exception as exc:
         raise RuntimeError(f"Could not apply the model's bitsandbytes quantization config: {exc}") from exc
@@ -562,12 +577,18 @@ def load_model_and_processor(
         "cache_dir": str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
     }
     if torch_dtype is not None:
-        kwargs["torch_dtype"] = torch_dtype
+        kwargs["dtype"] = torch_dtype
     else:
-        kwargs["torch_dtype"] = torch.bfloat16
+        kwargs["dtype"] = torch.bfloat16
     quantization_config = _quantization_config(resolved.model_config, resolved.quantization)
     if quantization_config is not None:
-        kwargs["quantization_config"] = quantization_config
+        if resolved.model_config.get("quantization_config"):
+            # Transformers prioritizes the model config over loading kwargs.
+            # Update the in-memory copy too so our qualified exclusions apply
+            # to pre-quantized checkpoints, without editing config.json.
+            model_config.quantization_config = quantization_config.to_dict()
+        else:
+            kwargs["quantization_config"] = quantization_config
     if resolved.subfolder:
         kwargs["subfolder"] = resolved.subfolder
     quantization_options = resolved.model_config.get("quantization_config") or resolved.quantization or {}
@@ -576,7 +597,7 @@ def load_model_and_processor(
         name="load_in_4bit",
     )
     if quantization_config is not None and is_4bit:
-        kwargs["torch_dtype"] = torch.float16
+        kwargs["dtype"] = torch.float16
     model_path = str(resolved.model_dir)
     try:
         try:

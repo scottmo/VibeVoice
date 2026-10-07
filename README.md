@@ -84,6 +84,9 @@ A comprehensive Gradio interface for generating high-quality multi-speaker dialo
 
 - **Multi-Speaker Support**: Generate dialogue with up to 4 distinct speakers
 - **Manual Script Editor**: Enter dialogue directly and assign up to four selected voices to speaker labels
+- **Short Speaker Labels**: Use `[1] Hello` and `[2] Hi`; `Speaker 1:` remains supported. Labels refer to the selected voice slots, and unlabelled continuation lines stay with the preceding labelled speaker. Plain scripts still rotate speakers per line.
+- **Generation Seed**: Set a positive seed in Generation Parameters to repeat a request, or use `0` for a random seed. The resolved seed appears in the generation log and is applied in both streaming and `--lod` modes. Reproducibility depends on the same model, settings, device and software; cross-device bit-for-bit identity is not guaranteed. Length remains automatic.
+- **Local ASR**: Upload audio and click **Transcribe** in the ASR section to obtain a transcript and JSON segments with timestamps and zero-based speaker IDs. The readable transcript uses one-based `[N]` labels.
 - **Model Selection**: Choose between VibeVoice-7B-Preview and VibeVoice-1.5B models
 - **Vocal Isolation**: AI-powered removal of background music/noise from voice samples (enabled by default)
 - **Voice Normalization**: Automatically normalize voice sample volumes for consistent audio quality
@@ -94,6 +97,20 @@ A comprehensive Gradio interface for generating high-quality multi-speaker dialo
 - **Audio Gain Control**: Simple gain adjustment directly in the audio player
 - **Audio Trimming**: Built-in trimming support using the audio player controls
 - **Custom Voices**: Support for custom voice samples in organized subdirectories
+
+Short speaker labels also work through `VibeVoiceProcessor`. `[1]` always means the first selected voice, with optional colon (`[1]: Hello`). Existing zero-based long scripts containing `Speaker 0:` remain supported; otherwise long labels start at 1. Invalid labels or references beyond the number of selected voices produce a clear error.
+
+### Shared TTS and ASR environment
+
+TTS and native `VibeVoice-ASR-HF` use the same project virtual environment, pinned to Transformers 5.3.0. Install or update the project dependencies using the normal workflow:
+
+```powershell
+.\venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+ASR runs in a disposable subprocess from that same Python environment so its model memory is released after each request. Place a complete native ASR checkpoint, including processor/tokenizer assets, under `<VIBEVOICE_MODELS_DIR>/asr/` or `<VIBEVOICE_MODELS_DIR>/tts/`; the existing `tts/VibeVoice-ASR-HF` layout is supported. ASR checkpoints are kept out of the TTS model selector. All ASR model/processor loading is local-only, regardless of the TTS model source setting.
+
+ASR releases the loaded TTS model before loading its own checkpoint. CUDA placement uses automatic CPU offload with a GPU memory reserve; CPU/MPS follow the app's selected device. The ASR process exits after each request, and TTS reloads on the next generation. Transcription, TTS generation and model switching share one queue to prevent overlapping model operations. Optional context/hotwords can guide recognition. If the model output cannot be parsed, the raw text is retained with a status message rather than inventing timestamps.
 
 ### 🔄 Load-on-Demand (LOD) Mode Architecture
 
@@ -168,11 +185,13 @@ pip install rotary-embedding-torch einops
 
 ### 🎯 Usage
 
+The page opens without loading a TTS model. Choose a model and click **Load Selected Model** when ready. In standard mode it remains loaded for subsequent generations; `--lod` loads the selected model in a worker when generation starts and releases it afterward.
+
 ```bash
 # Basic usage
 python main.py
 
-# With load-on-demand mode (faster startup, true VRAM cleanup)
+# With load-on-demand mode (true VRAM cleanup after each generation)
 python main.py --lod
 
 # With debug mode

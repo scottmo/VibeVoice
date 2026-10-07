@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import numpy as np
 
@@ -44,7 +44,8 @@ class DemoStub:
         }
         self.available_models = {"Test model": "test-model"}
         self.model_path = "Test model"
-        self.model_settings = SimpleNamespace(source="local", tts_dir=Path("models/tts"))
+        self.model_settings = SimpleNamespace(source="local", models_dir=Path("models"), tts_dir=Path("models/tts"))
+        self.device = "cpu"
         self.inference_steps = 5
         self.load_on_demand = False
         self.model_loaded = True
@@ -88,6 +89,74 @@ class MainInterfaceTests(unittest.TestCase):
 
     def function(self, name):
         return next(fn.fn for fn in self.functions.values() if getattr(fn.fn, "__name__", "") == name)
+
+    def test_startup_opens_page_without_loading_and_default_selection_loads_manually(self):
+        settings = app_module.ModelLoadingSettings("local", Path("models"), False, True)
+        for lod in (False, True):
+            with (
+                self.subTest(lod=lod),
+                contextlib.redirect_stdout(io.StringIO()),
+                patch.object(app_module, "discover_local_models", return_value={"Test model": "test-model"}),
+                patch.object(app_module.VibeVoiceDemo, "load_model") as load,
+                patch.object(app_module.VibeVoiceDemo, "_spawn_worker_process") as spawn,
+            ):
+                demo = app_module.VibeVoiceDemo(
+                    "Test model", device="cpu", load_on_demand=lod, model_settings=settings,
+                )
+                interface = app_module.create_demo_interface(demo)
+                load.assert_not_called()
+                spawn.assert_not_called()
+                self.assertFalse(demo.model_loaded)
+                self.assertIsNone(demo.model)
+                self.assertIsNone(demo.processor)
+                self.assertTrue(demo.available_voices)
+                log = next(component for component in interface.config["components"]
+                           if component.get("props", {}).get("label") == "Generation Log")
+                self.assertIn("No model loaded", log["props"]["value"])
+                callback = next(fn.fn for fn in interface.fns.values()
+                                if getattr(fn.fn, "__name__", "") == "switch_model")
+
+                def mark_loaded():
+                    demo.model_loaded = True
+
+                load.side_effect = mark_loaded
+                result = callback("Test model", *list(demo.available_voices)[:4])
+                self.assertIn("✅", result[0])
+                if lod:
+                    load.assert_not_called()
+                    demo.ensure_model_loaded()
+                    spawn.assert_called_once_with()
+                else:
+                    load.assert_called_once_with()
+                    self.assertTrue(demo.model_loaded)
+                    callback("Test model")
+                    load.assert_called_once_with()
+
+    def test_asr_ui_callback_and_shared_model_queue(self):
+        demo = DemoStub()
+        demo.unload_model = Mock()
+        with patch.object(app_module, "discover_asr_models", return_value={"ASR": "checkpoint"}):
+            interface = app_module.create_demo_interface(demo)
+        callback = next(fn.fn for fn in interface.fns.values() if getattr(fn.fn, "__name__", "") == "transcribe_upload")
+        components = interface.config["components"]
+        labels = [component.get("props", {}).get("label") for component in components]
+        for label in ("Upload Audio", "Transcript", "Segments (timestamps and speaker IDs)", "Seed"):
+            self.assertIn(label, labels)
+        upload = next(component for component in components if component.get("props", {}).get("label") == "Upload Audio")
+        self.assertEqual(upload["props"]["type"], "filepath")
+        self.assertEqual(upload["props"]["sources"], ["upload"])
+        self.assertIn("Upload", list(callback(None, "ASR", ""))[-1][2])
+        demo.unload_model.assert_not_called()
+        payload = {"transcript": "[1] Hi", "segments": [{"speaker": 0, "start": 0, "end": 1, "text": "Hi"}]}
+        with patch.object(app_module, "asr_python"), patch.object(app_module, "run_transcription", return_value=payload) as transcribe:
+            results = list(callback("upload.wav", "ASR", "Names"))
+        self.assertEqual(results[-1], (payload["transcript"], payload["segments"], "Transcription complete."))
+        transcribe.assert_called_once_with("upload.wav", "checkpoint", "cpu", "Names")
+        demo.unload_model.assert_called_once()
+        model_functions = [fn for fn in interface.fns.values() if getattr(fn.fn, "__name__", "") in
+                           {"transcribe_upload", "generate_podcast_wrapper", "switch_model"}]
+        self.assertEqual(len(model_functions), 3)
+        self.assertTrue(all(fn.concurrency_id == "model_operations" for fn in model_functions))
 
     def test_manual_audio_ui_and_model_switch_are_wired_without_ai_chat(self):
         components = self.interface.config["components"]
@@ -235,7 +304,7 @@ class MainInterfaceTests(unittest.TestCase):
                 2,
                 "Speaker 1: Hello.\nSpeaker 2: Hi.",
                 *special_speakers,
-                1.6, 10, True, 0.95, 0.95, 0, "", True, False, True,
+                1.6, 10, True, 0.95, 0.95, 0, "", True, False, True, 12345,
             ))
 
         self.assertEqual([len(result) for result in results], [6, 6, 6, 6])
@@ -249,6 +318,7 @@ class MainInterfaceTests(unittest.TestCase):
             special_speakers,
         )
         cache_audio.assert_called_once_with(complete_audio)
+        self.assertEqual(generated_requests[0]["seed"], 12345)
 
     def test_refresh_preserves_current_voice_and_falls_back_when_removed(self):
         previous_voices = self.demo.available_voices

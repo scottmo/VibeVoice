@@ -72,6 +72,8 @@ from vibevoice.modular.streamer import AudioStreamer
 from vibevoice.utils.vocal_isolation import VocalIsolator, clear_vocal_isolator_cache
 from transformers.utils import logging
 from transformers import set_seed
+from vibevoice.script import normalize_script, resolve_seed
+from vibevoice.asr import asr_python, discover_asr_models, run_transcription
 
 logging.set_verbosity_info()
 logger = logging.get_logger(__name__)
@@ -450,7 +452,8 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
                 elif request[0] == "generate":
                     # Unpack generation request
                     (_, text, voice_samples, cfg_scale, ddpm_steps, do_sample, 
-                     temperature, top_p, top_k, negative_prompt) = request
+                     temperature, top_p, top_k, negative_prompt, seed) = request
+                    set_seed(seed)
                     
                     # Import AudioStreamer in worker
                     from vibevoice.modular.streamer import AudioStreamer
@@ -501,7 +504,7 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
                             },
                             negative_prompt_ids=negative_ids,
                             audio_streamer=audio_streamer,  # Use streamer to catch EOS
-                            verbose=self.debug,  # Enable verbose output in debug mode
+                            verbose=False,
                             refresh_negative=True,
                         )
                     
@@ -554,7 +557,7 @@ class VibeVoiceDemo:
     def __init__(self, model_path: str, device: str = None, inference_steps: int = 5, debug: bool = False, load_on_demand: bool = False,
                  hf_offline: bool | None = None, hf_cache_dir: str | None = None,
                  model_settings: ModelLoadingSettings | None = None):
-        """Initialize the VibeVoice demo with model loading."""
+        """Initialize the demo without loading model weights."""
         self.model_settings = model_settings or settings_from_args()
         self.model_path = model_path
         
@@ -626,15 +629,12 @@ class VibeVoiceDemo:
             self.model_settings.source,
         )
 
-        # Load model immediately unless load_on_demand is True
-        if not load_on_demand:
-            self.load_model()
-            self.setup_voice_presets()
-        else:
+        # Build the page and voice choices before loading any model weights.
+        self.setup_voice_presets()
+        if load_on_demand:
             print("🔄 Load On Demand mode: Model will be loaded when first generation request is made")
-            self.model_loaded = False
-            # Initialize voice presets for UI creation even in LOD mode
-            self.setup_voice_presets()
+        else:
+            print("⏸️ No model loaded. Select a model and click Load Selected Model in the page.")
         
         # Removed legacy stop words storage from deprecated script system
         
@@ -801,7 +801,7 @@ class VibeVoiceDemo:
 
     def switch_model(self, new_model_path: str):
         """Switch to a different model, unloading the current one if loaded."""
-        if new_model_path == self.model_path:
+        if new_model_path == self.model_path and self.model_loaded:
             print(f"Model {new_model_path} is already loaded")
             return True
 
@@ -1091,7 +1091,8 @@ class VibeVoiceDemo:
                                  top_k: int = 0,
                                  negative_prompt: str = "",
                                  isolate_voices: bool = True,
-                                 normalize_voices: bool = False) -> Iterator[tuple]:
+                                 normalize_voices: bool = False,
+                                 seed: int = 42) -> Iterator[tuple]:
         try:
             
             # Reset stop flag and set generating state
@@ -1109,6 +1110,8 @@ class VibeVoiceDemo:
             if num_speakers < 1 or num_speakers > 4:
                 self.is_generating = False
                 raise gr.Error("Error: Number of speakers must be between 1 and 4.")
+            seed = resolve_seed(seed)
+            formatted_script = normalize_script(script, num_speakers)
             
             # Collect selected speakers
             selected_speakers = [speaker_1, speaker_2, speaker_3, speaker_4][:num_speakers]
@@ -1136,6 +1139,7 @@ class VibeVoiceDemo:
             log = f"🎙️ Generating audio with {num_speakers} speakers\n"
             log += f"📊 Parameters: CFG Scale={cfg_scale}, Diffusion Steps={effective_steps}, Sampling={do_sample}, Temp={temperature}, TopP={top_p}, TopK={top_k}\n"
             log += f"🎭 Speakers: {', '.join(selected_speakers)}\n"
+            log += f"🎲 Seed: {seed}\n"
             
             # Check for stop signal
             if self.stop_generation:
@@ -1198,25 +1202,7 @@ class VibeVoiceDemo:
                 yield None, None, "🛑 Generation stopped by user", gr.update(visible=False)
                 return
             
-            # Parse script to assign speaker ID's
-            lines = script.strip().split('\n')
-            formatted_script_lines = []
-            
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                    
-                # Check if line already has speaker format
-                if line.startswith('Speaker ') and ':' in line:
-                    formatted_script_lines.append(line)
-                else:
-                    # Auto-assign to speakers in rotation
-                    speaker_id = len(formatted_script_lines) % num_speakers
-                    formatted_script_lines.append(f"Speaker {speaker_id}: {line}")
-            
-            formatted_script = '\n'.join(formatted_script_lines)
-            log += f"📝 Formatted script with {len(formatted_script_lines)} turns\n\n"
+            log += f"📝 Formatted script with {len(formatted_script.splitlines())} turns\n\n"
             log += "🔄 Processing with VibeVoice (streaming mode)...\n"
             
             # Check for stop signal before processing
@@ -1242,7 +1228,7 @@ class VibeVoiceDemo:
                     # Generate using worker process
                     audio_values = self._generate_with_worker(
                         formatted_script, voice_samples, cfg_scale, diffusion_steps,
-                        do_sample, temperature, top_p, top_k, negative_prompt
+                        do_sample, temperature, top_p, top_k, negative_prompt, seed
                     )
                     
                     generation_time = time.time() - start_time
@@ -1319,7 +1305,7 @@ class VibeVoiceDemo:
             # Start generation in a separate thread
             generation_thread = threading.Thread(
                 target=self._generate_with_streamer,
-                args=(inputs, cfg_scale, audio_streamer, do_sample, temperature, top_p, top_k, negative_prompt)
+                args=(inputs, cfg_scale, audio_streamer, do_sample, temperature, top_p, top_k, negative_prompt, seed)
             )
             generation_thread.start()
             
@@ -1546,13 +1532,14 @@ class VibeVoiceDemo:
             
             yield None, None, error_msg, gr.update(visible=False)
     
-    def _generate_with_streamer(self, inputs, cfg_scale, audio_streamer, do_sample=True, temperature=0.95, top_p=0.95, top_k=0, negative_prompt: str = ""):
+    def _generate_with_streamer(self, inputs, cfg_scale, audio_streamer, do_sample=True, temperature=0.95, top_p=0.95, top_k=0, negative_prompt: str = "", seed: int = 42):
         """Helper method to run generation with streamer in a separate thread."""
         try:
             # Check for stop signal before starting generation
             if self.stop_generation:
                 audio_streamer.end()
                 return
+            set_seed(seed)
                 
             # Define a stop check function that can be called from generate
             def check_stop_generation():
@@ -1594,7 +1581,7 @@ class VibeVoiceDemo:
             audio_streamer.end()
     
     def _generate_with_worker(self, formatted_script, voice_samples, cfg_scale, ddpm_steps,
-                              do_sample, temperature, top_p, top_k, negative_prompt):
+                              do_sample, temperature, top_p, top_k, negative_prompt, seed=42):
         """
         Generate audio using the worker process (LOD multiprocessing mode).
         Returns complete audio (no streaming in this mode).
@@ -1606,7 +1593,7 @@ class VibeVoiceDemo:
         
         # Send request to worker
         request = ("generate", formatted_script, voice_samples, cfg_scale, ddpm_steps,
-                   do_sample, temperature, top_p, top_k, negative_prompt)
+                   do_sample, temperature, top_p, top_k, negative_prompt, seed)
         self.request_queue.put(request)
         
         # Wait for response (with timeout)
@@ -2137,6 +2124,10 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                 
                 # Sampling parameters (contains all generation settings)
                 with gr.Accordion("Generation Parameters", open=False):
+                    seed_input = gr.Number(
+                        value=42, precision=0, minimum=0, maximum=4294967295,
+                        label="Seed", info="Use the same positive seed to repeat a run; 0 chooses a random seed shown in the log.",
+                    )
                     cfg_scale = gr.Slider(
                         minimum=1.0,
                         maximum=2.0,
@@ -2198,10 +2189,11 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                     label="Conversation Script",
                     placeholder="""Enter your dialogue script here. You can format it as:
 
-Speaker 1: Welcome to our conversation today!
-Speaker 2: Thanks for having me. I'm excited to discuss...
+[1] Welcome to our conversation today!
+[2] Thanks for having me. I'm excited to discuss...
 
-Or paste text directly and it will auto-assign speakers.""",
+Speaker 1: Text is also supported. Unlabelled text after a marker continues that turn.
+Or paste plain text directly and it will auto-assign speakers.""",
                     lines=18,
                     max_lines=40,
                     elem_classes="script-input"
@@ -2303,6 +2295,8 @@ Or paste text directly and it will auto-assign speakers.""",
                 # Generation log
                 log_output = gr.Textbox(
                     label="Generation Log",
+                    value=("" if demo_instance.model_loaded else
+                           "No model loaded. Select a model and click Load Selected Model when ready."),
                     lines=8,
                     max_lines=15,
                     interactive=False,
@@ -2356,10 +2350,42 @@ Or paste text directly and it will auto-assign speakers.""",
         )
         
         # Main generation function with streaming
+        # ASR has separate input/output controls and never appears in the TTS selector.
+        with gr.Accordion("🎧 ASR — Audio Transcription", open=False):
+            asr_models = discover_asr_models(demo_instance.model_settings)
+            asr_model = gr.Dropdown(choices=list(asr_models), value=next(iter(asr_models), None),
+                                    label="ASR Model", interactive=True)
+            asr_upload = gr.Audio(sources=["upload"], type="filepath", label="Upload Audio")
+            asr_context = gr.Textbox(label="Context / Hotwords (optional)", placeholder="Names or terms that appear in the audio")
+            transcribe_btn = gr.Button("Transcribe", variant="primary")
+            asr_transcript = gr.Textbox(label="Transcript", lines=8, interactive=False)
+            asr_segments = gr.JSON(label="Segments (timestamps and speaker IDs)")
+            asr_status = gr.Textbox(label="Transcription Status", interactive=False,
+                                    value="Ready" if asr_models else "No local VibeVoice-ASR-HF checkpoint found in the model root.")
+
+        def transcribe_upload(audio_path, selected_model, context):
+            try:
+                if not audio_path:
+                    raise ValueError("Upload an audio file before transcribing.")
+                if selected_model not in asr_models:
+                    raise ValueError("Select a local ASR model before transcribing.")
+                asr_python()  # Check the runtime before releasing the current TTS model.
+                yield "", [], "Loading ASR and transcribing…"
+                if demo_instance.model_loaded:
+                    demo_instance.unload_model()
+                payload = run_transcription(audio_path, asr_models[selected_model], demo_instance.device, context)
+                yield payload["transcript"], payload["segments"], payload.get("warning") or "Transcription complete."
+            except Exception as exc:
+                yield "", [], f"Transcription failed: {exc}"
+
+        transcribe_btn.click(transcribe_upload, inputs=[asr_upload, asr_model, asr_context],
+                             outputs=[asr_transcript, asr_segments, asr_status],
+                             concurrency_id="model_operations", concurrency_limit=1)
+
         def generate_podcast_wrapper(num_speakers, script, *speakers_and_params):
             """Wrapper function to handle the streaming generation call."""
             try:
-                # Ensure model is loaded if in LOD mode
+                # Load when generating if needed (including after ASR unloads TTS).
                 demo_instance.ensure_model_loaded()
 
                 # Extract speakers and parameters
@@ -2374,6 +2400,7 @@ Or paste text directly and it will auto-assign speakers.""",
                 isolate_voices_val = bool(speakers_and_params[11]) if len(speakers_and_params) > 11 else True
                 normalize_voices_val = bool(speakers_and_params[12]) if len(speakers_and_params) > 12 else False
                 save_output_val = bool(speakers_and_params[13]) if len(speakers_and_params) > 13 else True
+                seed_val = resolve_seed(speakers_and_params[14]) if len(speakers_and_params) > 14 else 42
 
                 # Clear audio outputs and reset visibility at start
                 yield None, gr.update(value=None, visible=False), "🎙️ Starting generation...", gr.update(visible=True), gr.update(visible=False), gr.update(visible=True)
@@ -2396,7 +2423,8 @@ Or paste text directly and it will auto-assign speakers.""",
                     top_k=top_k_val,
                     negative_prompt=negative_prompt_val,
                     isolate_voices=isolate_voices_val,
-                    normalize_voices=normalize_voices_val
+                    normalize_voices=normalize_voices_val,
+                    seed=seed_val
                 ):
                     final_log = log
                     
@@ -2459,13 +2487,13 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         ).then(
             fn=generate_podcast_wrapper,
-            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices, save_output],
+            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices, save_output, seed_input],
             outputs=[audio_output, complete_audio_output, log_output, streaming_status, generate_btn, stop_btn],
             js=(
                 f"(...values) => {{ {native_select_reader_js(speaker_select_ids, [2, 3, 4, 5])} "
                 "return [...values.slice(0, 2), ...selected, ...values.slice(6)]; }"
             ),
-            queue=True  # Enable Gradio's built-in queue
+            queue=True, concurrency_id="model_operations", concurrency_limit=1
         )
         
         # Connect stop button
@@ -2531,7 +2559,7 @@ Or paste text directly and it will auto-assign speakers.""",
                 f"(...values) => {{ {native_select_reader_js([model_select_id] + speaker_select_ids, [0, 1, 2, 3, 4])} "
                 "return selected; }"
             ),
-            queue=False
+            queue=True, concurrency_id="model_operations", concurrency_limit=1
         )
 
         # Gain Control Event Handlers
@@ -2617,7 +2645,7 @@ def parse_args():
     parser.add_argument(
         "--lod",
         action="store_true",
-        help="Load On Demand: Skip model loading on startup, load models when needed",
+        help="Load On Demand: Load models in a disposable worker and release memory after each generation",
     )
     return parser.parse_args()
 

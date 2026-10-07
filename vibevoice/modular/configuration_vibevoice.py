@@ -238,6 +238,11 @@ class VibeVoiceConfig(PretrainedConfig):
         self.acoustic_vae_dim = getattr(self.acoustic_tokenizer_config, 'vae_dim', 64)
         self.semantic_vae_dim = getattr(self.semantic_tokenizer_config, 'vae_dim', 128)
 
+        # Transformers 5 uses the root flag when deciding which checkpoint
+        # keys are tied. Keep it aligned with Qwen unless the checkpoint
+        # explicitly provides its own root-level setting.
+        kwargs.setdefault("tie_word_embeddings", self.decoder_config.tie_word_embeddings)
+
         super().__init__(**kwargs)
 
 __all__ = [

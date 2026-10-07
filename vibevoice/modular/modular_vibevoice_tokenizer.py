@@ -756,7 +756,8 @@ class TokenizerEncoder(nn.Module):
         )
         
         self.stages = nn.ModuleList()
-        dp_rates = [x.item() for x in torch.linspace(0, drop_path_rate, sum(self.depths))] 
+        total_blocks = sum(self.depths)
+        dp_rates = [drop_path_rate * index / max(total_blocks - 1, 1) for index in range(total_blocks)]
         cur = 0
 
         for i in range(len(self.depths)):
@@ -893,7 +894,8 @@ class TokenizerDecoder(nn.Module):
         )
 
         self.stages = nn.ModuleList()
-        dp_rates = [x.item() for x in torch.linspace(0, drop_path_rate, sum(self.depths))] 
+        total_blocks = sum(self.depths)
+        dp_rates = [drop_path_rate * index / max(total_blocks - 1, 1) for index in range(total_blocks)]
         cur = 0
         
         # Create stages in the same order as the original model
@@ -1185,8 +1187,8 @@ class VibeVoiceSemanticTokenizerModel(PreTrainedModel):
         sampled_latents, _ = self.sampling(encoder_output, dist_type='none')
         return None, sampled_latents
 
-AutoModel.register(VibeVoiceAcousticTokenizerConfig, VibeVoiceAcousticTokenizerModel)
-AutoModel.register(VibeVoiceSemanticTokenizerConfig, VibeVoiceSemanticTokenizerModel)
+AutoModel.register(VibeVoiceAcousticTokenizerConfig, VibeVoiceAcousticTokenizerModel, exist_ok=True)
+AutoModel.register(VibeVoiceSemanticTokenizerConfig, VibeVoiceSemanticTokenizerModel, exist_ok=True)
 
 __all__ = [
     "VibeVoiceTokenizerStreamingCache",

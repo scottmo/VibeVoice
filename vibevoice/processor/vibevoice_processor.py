@@ -268,7 +268,7 @@ class VibeVoiceProcessor:
         
         # Process voice samples if provided
         if voice_samples:
-            voice_tokens, voice_speech_inputs, voice_speech_masks = self._create_voice_prompt(voice_samples[:len(all_speakers)])
+            voice_tokens, voice_speech_inputs, voice_speech_masks = self._create_voice_prompt(voice_samples[:max(all_speakers) + 1])
         else:
             voice_tokens, voice_speech_inputs, voice_speech_masks = [], [], []
         
@@ -551,78 +551,23 @@ class VibeVoiceProcessor:
 
     def _convert_text_to_script(self, text_file: str) -> str:
         """
-        Convert text file to script format.
-        Handles multiple formats:
-        1. Already formatted as "Speaker X: text"
-        2. Plain text (assigns to Speaker 1)
-        
-        Handles edge cases like multiple colons in a line.
+        Normalize text files through the same parser used for direct scripts.
+
+        Explicit short/long speaker labels are preserved; unlabelled files keep
+        the existing single-speaker behavior.
         """
         with open(text_file, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-        
-        script_lines = []
-        current_speaker = 1
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            
-            # Try to parse as "Speaker X: text" format
-            # Use regex to be more robust
-            speaker_match = re.match(r'^Speaker\s+(\d+)\s*:\s*(.*)$', line, re.IGNORECASE)
-            
-            if speaker_match:
-                speaker_id = int(speaker_match.group(1))
-                text = speaker_match.group(2).strip()
-                if text:
-                    script_lines.append(f"Speaker {speaker_id}: {text}")
-            else:
-                # Treat as plain text - assign to current speaker
-                script_lines.append(f"Speaker {current_speaker}: {line}")
-        
-        if not script_lines:
-            raise ValueError("No valid content found in text file")
-            
-        return "\n".join(script_lines)
+            content = f.read()
+        from vibevoice.script import parse_script
+        return "\n".join(
+            f"Speaker {speaker + 1}: {text}"
+            for speaker, text in parse_script(content)
+        )
 
     def _parse_script(self, script: str) -> List[Tuple[int, str]]:
         """Parse script into list of (speaker_id, text) tuples."""
-        lines = script.strip().split("\n")
-        parsed_lines = []
-        speaker_ids = []
-                
-        # First pass: parse all lines and collect speaker IDs
-        for line in lines:
-            if not line.strip():
-                continue
-                
-            # Use regex to handle edge cases like multiple colons
-            match = re.match(r'^Speaker\s+(\d+)\s*:\s*(.*)$', line.strip(), re.IGNORECASE)
-            
-            if match:
-                speaker_id = int(match.group(1))
-                text = ' ' + match.group(2).strip()
-                parsed_lines.append((speaker_id, text))
-                speaker_ids.append(speaker_id)
-            else:
-                logger.warning(f"Could not parse line: '{line}'")
-        
-        if not parsed_lines:
-            raise ValueError("No valid speaker lines found in script")
-        
-        # Check if we need to normalize speaker IDs (only if all are > 0)
-        min_speaker_id = min(speaker_ids)
-        if min_speaker_id > 0:
-            # Normalize to start from 0
-            normalized_lines = []
-            for speaker_id, text in parsed_lines:
-                normalized_lines.append((speaker_id - 1, text))
-            return normalized_lines
-        else:
-            # Keep original IDs
-            return parsed_lines
+        from vibevoice.script import parse_script
+        return [(speaker, ' ' + text) for speaker, text in parse_script(script)]
 
     def _merge_inputs(self, text_inputs: BatchEncoding, audio_inputs: Dict) -> BatchEncoding:
         """Merge text and audio inputs into a single BatchEncoding."""

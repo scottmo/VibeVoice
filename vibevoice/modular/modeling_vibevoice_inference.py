@@ -31,6 +31,67 @@ logger = logging.get_logger(__name__)
 if not hasattr(modeling_utils, "ALL_PARALLEL_STYLES") or modeling_utils.ALL_PARALLEL_STYLES is None:
     modeling_utils.ALL_PARALLEL_STYLES = ["tp", "none", "colwise", "rowwise"]
 
+
+def _iter_cache_key_value_tensors(cache):
+    """Yield mutable key/value tensors across Transformers cache APIs."""
+    if cache is None:
+        return
+    layers = getattr(cache, "layers", None)
+    if layers is not None:
+        for layer in layers:
+            keys = getattr(layer, "keys", getattr(layer, "key_cache", None))
+            values = getattr(layer, "values", getattr(layer, "value_cache", None))
+            if torch.is_tensor(keys) and torch.is_tensor(values):
+                yield keys, values
+        return
+    key_cache = getattr(cache, "key_cache", None)
+    value_cache = getattr(cache, "value_cache", None)
+    if key_cache is not None and value_cache is not None:
+        for keys, values in zip(key_cache, value_cache):
+            if torch.is_tensor(keys) and torch.is_tensor(values):
+                yield keys, values
+
+
+def _refresh_negative_cache_for_speech_start(model_kwargs, input_ids, sample_indices, speech_start_id):
+    """Reset selected negative-prompt rows when a sample starts speech."""
+    if sample_indices.numel() == 0:
+        return
+    attention_mask = model_kwargs["attention_mask"]
+    attention_mask[sample_indices] = 0
+    attention_mask[sample_indices, -1] = 1
+    for keys, values in _iter_cache_key_value_tensors(model_kwargs.get("past_key_values")):
+        keys[sample_indices, :, -1, :] = keys[sample_indices, :, 0, :].clone()
+        values[sample_indices, :, -1, :] = values[sample_indices, :, 0, :].clone()
+    input_ids[sample_indices, -1] = speech_start_id
+
+
+def _align_negative_cache_for_non_diffusion(model_kwargs, input_ids, sample_indices, start_indices):
+    """Shift stale negative-prompt slots around non-diffusion tokens."""
+    if sample_indices.numel() == 0:
+        return
+    attention_mask = model_kwargs["attention_mask"]
+    seq_len = attention_mask.shape[1]
+    for sample_idx, start_idx in zip(sample_indices.tolist(), start_indices.tolist()):
+        if start_idx + 1 < seq_len - 1:
+            attention_mask[sample_idx, start_idx + 1:] = attention_mask[
+                sample_idx, start_idx:-1
+            ].clone()
+        attention_mask[sample_idx, start_idx] = 0
+    for keys, values in _iter_cache_key_value_tensors(model_kwargs.get("past_key_values")):
+        for sample_idx, start_idx in zip(sample_indices.tolist(), start_indices.tolist()):
+            if start_idx + 1 < keys.shape[2] - 1:
+                keys[sample_idx, :, start_idx + 1:, :] = keys[
+                    sample_idx, :, start_idx:-1, :
+                ].clone()
+                values[sample_idx, :, start_idx + 1:, :] = values[
+                    sample_idx, :, start_idx:-1, :
+                ].clone()
+    for sample_idx, start_idx in zip(sample_indices.tolist(), start_indices.tolist()):
+        if start_idx + 1 < input_ids.shape[1] - 1:
+            input_ids[sample_idx, start_idx + 1:] = input_ids[
+                sample_idx, start_idx:-1
+            ].clone()
+
 @dataclass
 class VibeVoiceCausalLMOutputWithPast(BaseModelOutputWithPast):
     logits: Optional[torch.FloatTensor] = None
@@ -66,7 +127,7 @@ class VibeVoiceTokenConstraintProcessor(LogitsProcessor):
         return scores
     
 class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, GenerationMixin):
-    _tied_weights_keys = ["lm_head.weight"]
+    _tied_weights_keys = {"lm_head.weight": "model.language_model.embed_tokens.weight"}
     _tp_plan = {"lm_head": "colwise_rep"}
 
     def __init__(self, config):
@@ -116,7 +177,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
     def semantic_connector(self):
         return self.model.semantic_connector
         
-    def tie_weights(self):
+    def tie_weights(self, missing_keys=None, recompute_mapping=True, **kwargs):
         """
         Tie the weights between the input embeddings and the output embeddings.
         """
@@ -251,6 +312,77 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             attentions=outputs.attentions,
         )
 
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        past_key_values=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        cache_position=None,
+        **kwargs,
+    ):
+        """Keep the cache input window aligned with Transformers 5.x positions."""
+        model_inputs = {"cache_position": cache_position}
+        if past_key_values is not None:
+            model_inputs["past_key_values"] = past_key_values
+            if inputs_embeds is not None and input_ids.shape[1] == 0:
+                inputs_embeds = inputs_embeds[:, -cache_position.shape[0]:]
+            elif inputs_embeds is not None or (
+                cache_position is not None and cache_position[-1] >= input_ids.shape[1]
+            ):
+                input_ids = input_ids[:, -cache_position.shape[0]:]
+            elif cache_position is not None and input_ids.shape[1] != cache_position.shape[0]:
+                input_ids = input_ids[:, cache_position]
+
+        use_embeds = inputs_embeds is not None and (
+            past_key_values is None
+            or (cache_position is not None and len(cache_position) == inputs_embeds.shape[1])
+        )
+        if use_embeds:
+            model_inputs["input_ids"] = None
+            model_inputs["inputs_embeds"] = inputs_embeds
+        else:
+            model_inputs["input_ids"] = (
+                input_ids.clone(memory_format=torch.contiguous_format) if input_ids is not None else None
+            )
+            model_inputs["inputs_embeds"] = None
+
+        if attention_mask is not None:
+            model_inputs["attention_mask"] = attention_mask
+        if attention_mask is not None and kwargs.get("position_ids") is None:
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            kwargs["position_ids"] = position_ids
+        if kwargs.get("position_ids") is not None:
+            if past_key_values is not None:
+                sequence_length = (
+                    model_inputs["inputs_embeds"].shape[1]
+                    if model_inputs.get("inputs_embeds") is not None
+                    else model_inputs["input_ids"].shape[1]
+                )
+                model_inputs["position_ids"] = kwargs["position_ids"][:, -sequence_length:]
+            else:
+                model_inputs["position_ids"] = kwargs.pop("position_ids")
+        for key, value in kwargs.items():
+            if key not in model_inputs:
+                model_inputs[key] = value
+        model_inputs.pop("labels", None)
+        return model_inputs
+
+    def _update_model_kwargs_for_generation(
+        self, outputs, model_kwargs, is_encoder_decoder=False, num_new_tokens=1
+    ):
+        model_kwargs = super()._update_model_kwargs_for_generation(
+            outputs,
+            model_kwargs,
+            is_encoder_decoder=is_encoder_decoder,
+            num_new_tokens=num_new_tokens,
+        )
+        cache_position = model_kwargs.get("cache_position")
+        if cache_position is not None and 0 < num_new_tokens < cache_position.numel():
+            model_kwargs["cache_position"] = cache_position[-num_new_tokens:]
+        return model_kwargs
+
     def _build_generate_config_model_kwargs(self, generation_config, inputs, tokenizer, return_processors=False, **kwargs):
         if generation_config is None:
             generation_config = GenerationConfig(
@@ -266,14 +398,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                 pad_token_id = tokenizer.pad_token_id
             )
 
-        generation_config, model_kwargs = self._prepare_generation_config(
-            generation_config, 
-            True, 
-            speech_start_id=tokenizer.speech_start_id, 
-            speech_end_id=tokenizer.speech_end_id, 
-            speech_diffusion_id=tokenizer.speech_diffusion_id, 
-            **kwargs
-        )
+        generation_config, model_kwargs = self._prepare_generation_config(generation_config, **kwargs)
         generation_config.speech_start_id = tokenizer.speech_start_id
         generation_config.speech_end_id = tokenizer.speech_end_id
         generation_config.speech_diffusion_id = tokenizer.speech_diffusion_id
@@ -299,8 +424,9 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             input_ids_length=input_ids_length,
         )
 
-        max_cache_length = generation_config.max_length - 1
-        self._prepare_cache_for_generation(generation_config, model_kwargs, None, batch_size, max_cache_length, device)
+        # Transformers 5 creates a config-aware DynamicCache on the first Qwen
+        # forward when this value is None. Keep an explicitly supplied cache.
+        model_kwargs.setdefault("past_key_values", None)
         model_kwargs['cache_position'] = torch.arange(input_ids_length, device=device, dtype=torch.long)
         for k, v in model_kwargs.items():
             if isinstance(v, torch.Tensor):
@@ -545,21 +671,11 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
             # speech_begin
             diffusion_start_indices = torch.arange(batch_size, device=device)[~finished_tags & (next_tokens == generation_config.speech_start_id)]
             if diffusion_start_indices.numel() > 0 and kwargs.get('refresh_negative', True):
-                # update attention mask
-                for i, sample_idx in enumerate(diffusion_start_indices.tolist()):
-                    negative_model_kwargs['attention_mask'][sample_idx, :] = 0
-                    negative_model_kwargs['attention_mask'][sample_idx, -1] = 1
-                # update past key values
-                for layer_idx, (k_cache, v_cache) in enumerate(zip(negative_model_kwargs['past_key_values'].key_cache, 
-                                                                        negative_model_kwargs['past_key_values'].value_cache)):
-                    # Process each non-diffusion sample
-                    for sample_idx in diffusion_start_indices.tolist():
-                        # Shift cache for this sample
-                        k_cache[sample_idx, :, -1, :] = k_cache[sample_idx, :, 0, :].clone()
-                        v_cache[sample_idx, :, -1, :] = v_cache[sample_idx, :, 0, :].clone()
-                # update negative_input_ids
-                for sample_idx in diffusion_start_indices.tolist():
-                    negative_input_ids[sample_idx, -1] = generation_config.speech_start_id
+                # Reset the unconditional cache before beginning speech.
+                _refresh_negative_cache_for_speech_start(
+                    negative_model_kwargs, negative_input_ids, diffusion_start_indices,
+                    generation_config.speech_start_id,
+                )
             
             # Prepare inputs_embeds for next iteration
             # Initialize with default embeddings for all tokens
@@ -592,32 +708,12 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
                 if non_diffusion_mask.any():
                     non_diffusion_indices = torch.arange(batch_size, device=device)[non_diffusion_mask]
                     start_indices = correct_cnt[non_diffusion_indices]
-
-                    # 1. Update attention_mask - need to handle each sample separately
-                    seq_len = negative_model_kwargs['attention_mask'].shape[1]
-                    for i, (sample_idx, start_idx) in enumerate(zip(non_diffusion_indices.tolist(), start_indices.tolist())):
-                        # Shift the attention mask for this sample
-                        if start_idx + 1 < seq_len - 1:
-                            negative_model_kwargs['attention_mask'][sample_idx, start_idx+1:] = \
-                                negative_model_kwargs['attention_mask'][sample_idx, start_idx:-1].clone()
-                        negative_model_kwargs['attention_mask'][sample_idx, start_idx] = 0
-
-                    # 2. Update past_key_values
-                    for layer_idx, (k_cache, v_cache) in enumerate(zip(negative_model_kwargs['past_key_values'].key_cache, 
-                                                                        negative_model_kwargs['past_key_values'].value_cache)):
-                        # Process each non-diffusion sample
-                        for sample_idx, start_idx in zip(non_diffusion_indices.tolist(), start_indices.tolist()):
-                            if start_idx + 1 < k_cache.shape[2] - 1:
-                                # Shift cache for this sample
-                                k_cache[sample_idx, :, start_idx+1:, :] = k_cache[sample_idx, :, start_idx:-1, :].clone()
-                                v_cache[sample_idx, :, start_idx+1:, :] = v_cache[sample_idx, :, start_idx:-1, :].clone()
-                    
-                    # 3. Update negative_input_ids
-                    for sample_idx, start_idx in zip(non_diffusion_indices.tolist(), start_indices.tolist()):
-                        if start_idx + 1 < negative_input_ids.shape[1] - 1:
-                            negative_input_ids[sample_idx, start_idx+1:] = \
-                                negative_input_ids[sample_idx, start_idx:-1].clone()
-                                
+                    _align_negative_cache_for_non_diffusion(
+                        negative_model_kwargs,
+                        negative_input_ids,
+                        non_diffusion_indices,
+                        start_indices,
+                    )
                     correct_cnt[non_diffusion_indices] += 1
 
                 positive_condition = outputs.last_hidden_state[diffusion_indices, -1, :]
@@ -745,7 +841,7 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         return speech[: len(speech) // 2]
     
 
-AutoModelForCausalLM.register(VibeVoiceConfig, VibeVoiceForConditionalGenerationInference)
+AutoModelForCausalLM.register(VibeVoiceConfig, VibeVoiceForConditionalGenerationInference, exist_ok=True)
 
 __all__ = [
     "VibeVoiceForConditionalGenerationInference",

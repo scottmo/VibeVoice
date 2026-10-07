@@ -2,7 +2,7 @@
 # Core ML/AI libraries
 torch>=2.7.1
 accelerate==1.6.0
-transformers==4.51.3
+transformers==5.3.0
 diffusers
 tqdm
 numpy

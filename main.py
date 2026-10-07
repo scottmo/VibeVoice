@@ -1731,13 +1731,57 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
             empty_message="No models are available.",
         )
     
-    # Custom CSS for high-end aesthetics with dark theme
+    theme_head = """
+    <script>
+    (() => {
+        const storageKey = "vibevoice-theme";
+        let savedTheme;
+        try { savedTheme = localStorage.getItem(storageKey); } catch {}
+        const initialTheme = savedTheme === "light" ? "light" : "dark";
+        const url = new URL(window.location.href);
+        // An explicit mode prevents Gradio from subscribing to system changes.
+        if (url.searchParams.get("__theme") !== initialTheme) {
+            url.searchParams.set("__theme", initialTheme);
+            window.location.replace(url);
+            return;
+        }
+
+        window.vibevoiceTheme = {
+            apply(theme) {
+                if (theme !== "light" && theme !== "dark") {
+                    throw new Error("Unknown theme: " + theme);
+                }
+                document.body.classList.toggle("dark", theme === "dark");
+                const url = new URL(window.location.href);
+                url.searchParams.set("__theme", theme);
+                window.history.replaceState(null, "", url);
+                try { localStorage.setItem(storageKey, theme); } catch {}
+                return theme === "dark" ? "☀️ Light mode" : "🌙 Dark mode";
+            },
+            toggle() {
+                return this.apply(document.body.classList.contains("dark") ? "light" : "dark");
+            }
+        };
+        window.vibevoiceTheme.apply(initialTheme);
+    })();
+    </script>
+    """
+
     custom_css = """
-    /* Modern dark theme with gradients */
     .gradio-container {
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        background: var(--body-background-fill);
         font-family: 'SF Pro Display', -apple-system, BlinkMacSystemFont, sans-serif;
-        color: #e2e8f0;
+        color: var(--body-text-color);
+        color-scheme: light;
+    }
+
+    .dark .gradio-container {
+        color-scheme: dark;
+    }
+
+    #theme-toggle {
+        max-width: 180px;
+        margin-left: auto;
     }
     
     /* Header styling */
@@ -1766,14 +1810,14 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     
     /* Card styling */
     .settings-card, .generation-card {
-        background: rgba(15, 23, 42, 0.8);
+        background: var(--background-fill-secondary);
         backdrop-filter: blur(10px);
-        border: 1px solid rgba(51, 65, 85, 0.8);
+        border: 1px solid var(--border-color-primary);
         border-radius: 16px;
         padding: 1.5rem;
         margin-bottom: 1rem;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
-        color: #e2e8f0;
+        color: var(--body-text-color);
     }
     
         /* Speaker selection styling */
@@ -1784,11 +1828,11 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     }
 
     .speaker-item {
-        background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
-        border: 1px solid rgba(71, 85, 105, 0.4);
+        background: linear-gradient(135deg, var(--background-fill-primary), var(--background-fill-secondary));
+        border: 1px solid var(--border-color-primary);
         border-radius: 12px;
         padding: 1rem;
-        color: #e2e8f0;
+        color: var(--body-text-color);
         font-weight: 500;
     }
 
@@ -1800,7 +1844,7 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     }
 
     .native-select-label {
-        color: #e2e8f0;
+        color: var(--body-text-color);
         font-size: 0.95rem;
         font-weight: 600;
     }
@@ -1810,18 +1854,18 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         width: 100%;
         min-height: 2.8rem;
         padding: 0.65rem 0.85rem;
-        border: 1px solid rgba(100, 116, 139, 0.75);
+        border: 1px solid var(--border-color-primary);
         border-radius: 10px;
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
-        color: #f8fafc;
-        color-scheme: dark;
+        background: var(--input-background-fill);
+        color: var(--body-text-color);
+        color-scheme: inherit;
         font: inherit;
         cursor: pointer;
     }
 
     select.native-select option {
-        background-color: #0f172a;
-        color: #f8fafc;
+        background-color: var(--input-background-fill);
+        color: var(--body-text-color);
     }
 
     select.native-select:focus-visible {
@@ -1831,14 +1875,14 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     }
 
     select.native-select:disabled {
-        color: #94a3b8;
+        color: var(--body-text-color-subdued);
         cursor: not-allowed;
         opacity: 0.85;
     }
 
     .native-select-help {
         margin: 0;
-        color: #94a3b8;
+        color: var(--body-text-color-subdued);
         font-size: 0.82rem;
         line-height: 1.35;
     }
@@ -1866,14 +1910,14 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     
     /* Queue status styling */
     .queue-status {
-        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        background: var(--background-fill-secondary);
         border: 1px solid rgba(14, 165, 233, 0.4);
         border-radius: 8px;
         padding: 0.75rem;
         margin: 0.5rem 0;
         text-align: center;
         font-size: 0.9rem;
-        color: #7dd3fc;
+        color: var(--color-accent);
     }
     
     .generate-btn {
@@ -1912,53 +1956,58 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     
         /* Audio player styling */
     .audio-output {
-        background: linear-gradient(135deg, #1e293b 0%, #334155 100%);
+        background: linear-gradient(135deg, var(--background-fill-primary), var(--background-fill-secondary));
         border-radius: 16px;
         padding: 1.5rem;
-        border: 1px solid rgba(71, 85, 105, 0.3);
-        color: #e2e8f0;
+        border: 1px solid var(--border-color-primary);
+        color: var(--body-text-color);
     }
 
     .complete-audio-section {
         margin-top: 1rem;
         padding: 1rem;
-        background: linear-gradient(135deg, #064e3b 0%, #065f46 100%);
+        background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
         border: 1px solid rgba(34, 197, 94, 0.4);
         border-radius: 12px;
+        color: #166534;
+    }
+
+    .dark .complete-audio-section {
+        background: linear-gradient(135deg, #064e3b 0%, #065f46 100%);
         color: #d1fae5;
     }
     
         /* Text areas */
     .script-input, .log-output {
-        background: rgba(15, 23, 42, 0.9) !important;
-        border: 1px solid rgba(71, 85, 105, 0.4) !important;
+        background: var(--input-background-fill) !important;
+        border: 1px solid var(--border-color-primary) !important;
         border-radius: 12px !important;
-        color: #e2e8f0 !important;
+        color: var(--body-text-color) !important;
         font-family: 'JetBrains Mono', monospace !important;
     }
 
-    .script-input::placeholder {
-        color: #94a3b8 !important;
+    .script-input textarea::placeholder, .log-output textarea::placeholder {
+        color: var(--body-text-color-subdued) !important;
     }
     
         /* Sliders */
     .slider-container {
-        background: rgba(30, 41, 59, 0.8);
-        border: 1px solid rgba(51, 65, 85, 0.6);
+        background: var(--background-fill-primary);
+        border: 1px solid var(--border-color-primary);
         border-radius: 8px;
         padding: 1rem;
         margin: 0.5rem 0;
-        color: #e2e8f0;
+        color: var(--body-text-color);
     }
 
     /* Labels and text */
     .gradio-container label {
-        color: #e2e8f0 !important;
+        color: var(--body-text-color) !important;
         font-weight: 600 !important;
     }
 
     .gradio-container .markdown {
-        color: #cbd5e1 !important;
+        color: var(--body-text-color) !important;
     }
     
     /* Responsive design */
@@ -1972,7 +2021,7 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         max-height: 200px !important;
         overflow-y: auto !important;
         scrollbar-width: thin !important;
-        scrollbar-color: #334155 #1e293b !important;
+        scrollbar-color: var(--border-color-primary) var(--background-fill-primary) !important;
     }
     
     .gradio-container .dropdown::-webkit-scrollbar {
@@ -1980,17 +2029,17 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     }
     
     .gradio-container .dropdown::-webkit-scrollbar-track {
-        background: #1e293b !important;
+        background: var(--background-fill-primary) !important;
         border-radius: 4px !important;
     }
     
     .gradio-container .dropdown::-webkit-scrollbar-thumb {
-        background: #334155 !important;
+        background: var(--border-color-primary) !important;
         border-radius: 4px !important;
     }
     
     .gradio-container .dropdown::-webkit-scrollbar-thumb:hover {
-        background: #475569 !important;
+        background: var(--border-color-secondary) !important;
     }
     
     /* Prevent dropdown from causing page scroll */
@@ -2007,27 +2056,55 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     with gr.Blocks(
         title="VibeVoice - Dialogue Audio Generator",
         css=custom_css,
+        head=theme_head,
         theme=gr.themes.Soft(
             primary_hue="blue",
             secondary_hue="purple",
             neutral_hue="slate",
         ).set(
-            body_background_fill="linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
+            body_background_fill="linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%)",
             body_background_fill_dark="linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
-            background_fill_primary="#1e293b",
+            background_fill_primary="#f1f5f9",
             background_fill_primary_dark="#1e293b",
-            background_fill_secondary="#0f172a",
+            background_fill_secondary="#ffffff",
             background_fill_secondary_dark="#0f172a",
-            border_color_primary="#334155",
+            block_background_fill="*background_fill_primary",
+            block_background_fill_dark="*background_fill_primary",
+            block_label_background_fill="*background_fill_secondary",
+            block_label_background_fill_dark="*background_fill_secondary",
+            input_background_fill="*background_fill_secondary",
+            input_background_fill_dark="*background_fill_secondary",
+            button_secondary_background_fill="*background_fill_primary",
+            button_secondary_background_fill_dark="*background_fill_primary",
+            button_secondary_background_fill_hover="#e2e8f0",
+            button_secondary_background_fill_hover_dark="#334155",
+            button_secondary_text_color="*body_text_color",
+            button_secondary_text_color_dark="*body_text_color",
+            border_color_primary="#cbd5e1",
             border_color_primary_dark="#334155",
             color_accent_soft="#667eea",
-            body_text_color="#e2e8f0",
+            body_text_color="#1e293b",
             body_text_color_dark="#e2e8f0",
-            body_text_color_subdued="#94a3b8",
+            body_text_color_subdued="#64748b",
             body_text_color_subdued_dark="#94a3b8",
         )
     ) as interface:
-        
+        theme_toggle = gr.Button("☀️ Light mode", elem_id="theme-toggle", size="sm")
+        interface.load(
+            fn=None,
+            inputs=[],
+            outputs=theme_toggle,
+            js="() => window.vibevoiceTheme.apply(document.body.classList.contains('dark') ? 'dark' : 'light')",
+            queue=False,
+        )
+        theme_toggle.click(
+            fn=None,
+            inputs=[],
+            outputs=theme_toggle,
+            js="() => window.vibevoiceTheme.toggle()",
+            queue=False,
+        )
+
         # Header
         gr.HTML("""
         <div class="main-header">

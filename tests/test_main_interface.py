@@ -90,6 +90,22 @@ class MainInterfaceTests(unittest.TestCase):
     def function(self, name):
         return next(fn.fn for fn in self.functions.values() if getattr(fn.fn, "__name__", "") == name)
 
+    def test_theme_toggle_and_initialization_run_in_browser_without_model_queue(self):
+        button = next(component for component in self.interface.config["components"]
+                      if component.get("props", {}).get("elem_id") == "theme-toggle")
+        dependencies = self.interface.config["dependencies"]
+        toggle = next(dependency for dependency in dependencies
+                      if (button["id"], "click") in dependency["targets"])
+        initialize = next(dependency for dependency in dependencies
+                          if dependency["outputs"] == [button["id"]]
+                          and any(event == "load" for _, event in dependency["targets"]))
+        for dependency in (toggle, initialize):
+            self.assertIsNone(self.functions[dependency["id"]].fn)
+            self.assertFalse(dependency["queue"])
+            self.assertEqual(dependency["inputs"], [])
+            self.assertEqual(dependency["outputs"], [button["id"]])
+            self.assertTrue(dependency["js"])
+
     def test_startup_opens_page_without_loading_and_default_selection_loads_manually(self):
         settings = app_module.ModelLoadingSettings("local", Path("models"), False, True)
         for lod in (False, True):
@@ -230,6 +246,7 @@ class MainInterfaceTests(unittest.TestCase):
             self.functions[dependency["id"]].fn.__name__: dependency
             for dependency in self.interface.config["dependencies"]
             if dependency["id"] in self.functions
+            and self.functions[dependency["id"]].fn is not None
         }
         for name in ("update_speaker_visibility", "refresh_voices", "generate_podcast_wrapper", "switch_model"):
             self.assertIn("document.getElementById", dependencies_by_name[name]["js"])

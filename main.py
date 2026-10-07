@@ -3,6 +3,8 @@ VibeVoice Gradio Demo - High-Quality Dialogue Generation Interface with Streamin
 """
 
 import argparse
+import html as html_utils
+import json
 import os
 import time
 from pathlib import Path
@@ -1646,6 +1648,101 @@ class VibeVoiceDemo:
     
 def create_demo_interface(demo_instance: VibeVoiceDemo):
     """Create the Gradio interface with streaming support."""
+
+    def render_native_select(select_id, label, choices, selected_value=None, info=None, empty_message=None):
+        """Render an accessible, escaped native select for the Gradio HTML component."""
+        choice_values = [str(choice) for choice in choices]
+        selected_value = str(selected_value) if selected_value is not None else None
+        if selected_value not in choice_values:
+            selected_value = choice_values[0] if choice_values else None
+
+        escaped_id = html_utils.escape(str(select_id), quote=True)
+        escaped_label = html_utils.escape(str(label), quote=True)
+        help_id = f"{escaped_id}-help"
+        if choice_values:
+            options = "".join(
+                f'<option value="{html_utils.escape(choice, quote=True)}"'
+                f'{" selected" if choice == selected_value else ""}>'
+                f'{html_utils.escape(choice)}</option>'
+                for choice in choice_values
+            )
+            disabled = ""
+            help_text = info or "Choose an option from the list."
+        else:
+            options = ""
+            disabled = " disabled"
+            help_text = info or empty_message or "No options are available."
+
+        escaped_help = html_utils.escape(str(help_text))
+        return (
+            '<div class="native-select-widget">'
+            f'<label class="native-select-label" for="{escaped_id}">{escaped_label}</label>'
+            f'<select class="native-select" id="{escaped_id}" aria-describedby="{help_id}"{disabled}>'
+            f'{options}</select>'
+            f'<p class="native-select-help" id="{help_id}">{escaped_help}</p>'
+            '</div>'
+        )
+
+    def selected_choice(choices, preferred):
+        """Keep a preferred option when present, otherwise use the first valid choice."""
+        choices = [str(choice) for choice in choices]
+        return preferred if preferred in choices else (choices[0] if choices else None)
+
+    def native_select_reader_js(select_ids, input_indexes):
+        """Build JS that reads live selects and falls back to their latest markup."""
+        return (
+            f"const selectIds = {json.dumps(list(select_ids))}; "
+            f"const inputIndexes = {json.dumps(list(input_indexes))}; "
+            "const readSelect = (id, inputIndex) => { "
+            "const live = document.getElementById(id); "
+            "if (live) return live.value; "
+            "const parsed = new DOMParser().parseFromString(values[inputIndex] || '', 'text/html'); "
+            "return parsed.getElementById(id)?.value ?? ''; "
+            "}; "
+            "const selected = selectIds.map((id, index) => readSelect(id, inputIndexes[index])); "
+        )
+
+    def select_values_js(select_ids, input_indexes):
+        """Return native select values in the same order as event inputs."""
+        return f"(...values) => {{ {native_select_reader_js(select_ids, input_indexes)} return selected; }}"
+
+    speaker_select_ids = [f"speaker-select-{i + 1}" for i in range(4)]
+    model_select_id = "model-select"
+
+    def render_speaker_select(index, choices, selected_value):
+        speaker_label = f"Speaker {index + 1}"
+        info = (
+            f"Choose the voice used for {speaker_label}."
+            if choices
+            else "No voices are available. Add voices, then refresh the list."
+        )
+        return render_native_select(
+            speaker_select_ids[index],
+            speaker_label,
+            choices,
+            selected_choice(choices, selected_value),
+            info=info,
+            empty_message="No voices are available. Add voices, then refresh the list.",
+        )
+
+    def render_model_select(choices, selected_value):
+        if choices:
+            info = "Select a model (the current model unloads when switched)."
+        elif demo_instance.model_settings.source == "local":
+            info = (
+                "No complete local TTS checkpoints found under "
+                f"{demo_instance.model_settings.tts_dir}. Add a model folder there."
+            )
+        else:
+            info = "No models are available."
+        return render_native_select(
+            model_select_id,
+            "Select Model",
+            choices,
+            selected_choice(choices, selected_value),
+            info=info,
+            empty_message="No models are available.",
+        )
     
     # Custom CSS for high-end aesthetics with dark theme
     custom_css = """
@@ -1706,6 +1803,61 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         padding: 1rem;
         color: #e2e8f0;
         font-weight: 500;
+    }
+
+    .native-select-widget {
+        display: flex;
+        flex-direction: column;
+        gap: 0.45rem;
+        width: 100%;
+    }
+
+    .native-select-label {
+        color: #e2e8f0;
+        font-size: 0.95rem;
+        font-weight: 600;
+    }
+
+    select.native-select {
+        appearance: auto;
+        width: 100%;
+        min-height: 2.8rem;
+        padding: 0.65rem 0.85rem;
+        border: 1px solid rgba(100, 116, 139, 0.75);
+        border-radius: 10px;
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        color: #f8fafc;
+        color-scheme: dark;
+        font: inherit;
+        cursor: pointer;
+    }
+
+    select.native-select option {
+        background-color: #0f172a;
+        color: #f8fafc;
+    }
+
+    select.native-select:focus-visible {
+        outline: 3px solid rgba(129, 140, 248, 0.95);
+        outline-offset: 2px;
+        border-color: #a5b4fc;
+    }
+
+    select.native-select:disabled {
+        color: #94a3b8;
+        cursor: not-allowed;
+        opacity: 0.85;
+    }
+
+    .native-select-help {
+        margin: 0;
+        color: #94a3b8;
+        font-size: 0.82rem;
+        line-height: 1.35;
+    }
+
+    .model-select-field {
+        margin-bottom: 0.5rem;
     }
     
     /* Streaming indicator */
@@ -1916,19 +2068,21 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                 gr.Markdown("### 🎭 **Speaker Selection**")
                 
                 available_speaker_names = list(demo_instance.available_voices.keys())
-                # default_speakers = available_speaker_names[:4] if len(available_speaker_names) >= 4 else available_speaker_names
                 default_speakers = ['en-Alice_woman', 'en-Carter_man', 'en-Frank_man', 'en-Maya_woman']
 
                 speaker_selections = []
                 for i in range(4):
                     default_value = default_speakers[i] if i < len(default_speakers) else None
-                    speaker = gr.Dropdown(
-                        choices=available_speaker_names,
-                        value=default_value,
-                        label=f"Speaker {i+1}",
-                        visible=(i < 2),  # Initially show only first 2 speakers
+                    speaker_label = f"Speaker {i + 1}"
+                    speaker = gr.HTML(
+                        value=render_speaker_select(i, available_speaker_names, default_value),
+                        label=speaker_label,
+                        show_label=False,
+                        visible=(i < 2) if i < 2 else "hidden",  # Keep hidden selects in the DOM for value retention.
                         elem_classes="speaker-item",
-                        multiselect=False
+                        elem_id=f"speaker-select-field-{i + 1}",
+                        min_height=0,
+                        padding=False,
                     )
                     speaker_selections.append(speaker)
                 # Refresh voices button
@@ -1962,16 +2116,14 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
                 gr.Markdown("### 🤖 **Model Selection**")
                 model_choices = list(demo_instance.available_models.keys())
                 selected_model = demo_instance.model_path if demo_instance.model_path in demo_instance.available_models else (model_choices[0] if model_choices else None)
-                model_info = "Select a model (the current model unloads when switched)."
-                if not model_choices and demo_instance.model_settings.source == "local":
-                    model_info = f"No complete local TTS checkpoints found under {demo_instance.model_settings.tts_dir}. Add a model folder there."
-                model_selector = gr.Dropdown(
-                    choices=model_choices,
-                    value=selected_model,
+                model_selector = gr.HTML(
+                    value=render_model_select(model_choices, selected_model),
                     label="Select Model",
-                    info=model_info,
-                    elem_classes="dropdown-container",
-                    multiselect=False
+                    show_label=False,
+                    elem_id="model-select-field",
+                    elem_classes="model-select-field",
+                    min_height=0,
+                    padding=False,
                 )
 
                 load_model_btn = gr.Button(
@@ -2157,32 +2309,49 @@ Or paste text directly and it will auto-assign speakers.""",
                     elem_classes="log-output"
                 )
                 
-        def update_speaker_visibility(num_speakers):
-            updates = []
-            for i in range(4):
-                updates.append(gr.update(visible=(i < num_speakers)))
-            return updates
+        def update_speaker_visibility(num_speakers, *selected_speakers):
+            current_choices = list(demo_instance.available_voices.keys())
+            return [
+                gr.update(
+                    value=render_speaker_select(
+                        index,
+                        current_choices,
+                        selected_speakers[index] if index < len(selected_speakers) else None,
+                    ),
+                    visible=(index < int(num_speakers)) if index < int(num_speakers) else "hidden",
+                )
+                for index in range(4)
+            ]
         
-        # Refresh the list of voices from disk and update dropdowns
-        def refresh_voices():
+        # Refresh the list of voices from disk and update the native selects.
+        def refresh_voices(*selected_speakers):
             demo_instance.setup_voice_presets()
             new_choices = list(demo_instance.available_voices.keys())
-            updates = []
-            for _ in range(4):
-                updates.append(gr.update(choices=new_choices))
-            return updates
+            return [
+                render_speaker_select(
+                    index,
+                    new_choices,
+                    selected_speakers[index] if index < len(selected_speakers) else None,
+                )
+                for index in range(4)
+            ]
         
         num_speakers.change(
             fn=update_speaker_visibility,
-            inputs=[num_speakers],
-            outputs=speaker_selections
+            inputs=[num_speakers] + speaker_selections,
+            outputs=speaker_selections,
+            js=(
+                f"(...values) => {{ {native_select_reader_js(speaker_select_ids, [1, 2, 3, 4])} "
+                "return [values[0], ...selected]; }"
+            ),
         )
 
         # Wire refresh button to update dropdown choices
         refresh_voices_btn.click(
             fn=refresh_voices,
-            inputs=[],
+            inputs=speaker_selections,
             outputs=speaker_selections,
+            js=select_values_js(speaker_select_ids, [0, 1, 2, 3]),
             queue=False
         )
         
@@ -2292,6 +2461,10 @@ Or paste text directly and it will auto-assign speakers.""",
             fn=generate_podcast_wrapper,
             inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices, save_output],
             outputs=[audio_output, complete_audio_output, log_output, streaming_status, generate_btn, stop_btn],
+            js=(
+                f"(...values) => {{ {native_select_reader_js(speaker_select_ids, [2, 3, 4, 5])} "
+                "return [...values.slice(0, 2), ...selected, ...values.slice(6)]; }"
+            ),
             queue=True  # Enable Gradio's built-in queue
         )
         
@@ -2310,8 +2483,17 @@ Or paste text directly and it will auto-assign speakers.""",
         )
 
         # Model switching function
-        def switch_model(selected_model):
+        def switch_model(selected_model, *selected_speakers):
             """Switch to the selected model."""
+            model_choices = list(demo_instance.available_models.keys())
+            previous_model = demo_instance.model_path
+
+            if selected_model not in demo_instance.available_models:
+                status_msg = f"❌ Unknown model selection: {selected_model}"
+                return (status_msg, render_model_select(model_choices, previous_model)) + tuple(
+                    gr.update() for _ in range(4)
+                )
+
             try:
                 success = demo_instance.switch_model(selected_model)
                 if success:
@@ -2319,24 +2501,36 @@ Or paste text directly and it will auto-assign speakers.""",
                     demo_instance.setup_voice_presets()
                     status_msg = f"✅ Successfully switched to model: {selected_model}"
                     print(status_msg)
-                    # Update all speaker dropdowns with new choices
-                    updates = [status_msg]
-                    for i in range(4):
-                        updates.append(gr.update(choices=list(demo_instance.available_voices.keys())))
-                    return tuple(updates)
-                else:
-                    error_msg = f"❌ Failed to switch to model: {selected_model}"
-                    return (error_msg,) + tuple([gr.update() for _ in range(4)])
+                    new_voice_choices = list(demo_instance.available_voices.keys())
+                    return (status_msg, render_model_select(model_choices, demo_instance.model_path)) + tuple(
+                        render_speaker_select(
+                            index,
+                            new_voice_choices,
+                            selected_speakers[index] if index < len(selected_speakers) else None,
+                        )
+                        for index in range(4)
+                    )
+
+                error_msg = f"❌ Failed to switch to model: {selected_model}"
+                return (error_msg, render_model_select(model_choices, demo_instance.model_path)) + tuple(
+                    gr.update() for _ in range(4)
+                )
             except Exception as e:
                 error_msg = f"❌ Error switching model: {str(e)}"
                 print(error_msg)
-                return (error_msg,) + tuple([gr.update() for _ in range(4)])
+                return (error_msg, render_model_select(model_choices, demo_instance.model_path)) + tuple(
+                    gr.update() for _ in range(4)
+                )
 
         # Connect model switching button
         load_model_btn.click(
             fn=switch_model,
-            inputs=[model_selector],
-            outputs=[log_output] + speaker_selections,
+            inputs=[model_selector] + speaker_selections,
+            outputs=[log_output, model_selector] + speaker_selections,
+            js=(
+                f"(...values) => {{ {native_select_reader_js([model_select_id] + speaker_select_ids, [0, 1, 2, 3, 4])} "
+                "return selected; }"
+            ),
             queue=False
         )
 

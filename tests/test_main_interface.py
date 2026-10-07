@@ -1,4 +1,5 @@
 import contextlib
+from html.parser import HTMLParser
 import io
 import sys
 import tempfile
@@ -10,6 +11,27 @@ from unittest.mock import patch
 import numpy as np
 
 import main as app_module
+
+
+class SelectMarkupParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.options = []
+        self.selected = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "option":
+            attrs = dict(attrs)
+            value = attrs.get("value")
+            self.options.append(value)
+            if "selected" in attrs:
+                self.selected = value
+
+
+def parse_select_markup(markup):
+    parser = SelectMarkupParser()
+    parser.feed(markup)
+    return parser.options, parser.selected
 
 
 class DemoStub:
@@ -28,6 +50,9 @@ class DemoStub:
         self.model_loaded = True
         self.saved_audio_calls = []
         self.stop_called = False
+        self.switch_model_calls = []
+        self.switch_model_result = True
+        self.switch_model_error = None
 
     def setup_voice_presets(self):
         pass
@@ -45,8 +70,13 @@ class DemoStub:
     def stop_audio_generation(self):
         self.stop_called = True
 
-    def switch_model(self, _model):
-        return True
+    def switch_model(self, model):
+        self.switch_model_calls.append(model)
+        if self.switch_model_error:
+            raise self.switch_model_error
+        if self.switch_model_result:
+            self.model_path = model
+        return self.switch_model_result
 
 
 class MainInterfaceTests(unittest.TestCase):
@@ -113,23 +143,98 @@ class MainInterfaceTests(unittest.TestCase):
         self.assertEqual(len(generate_entry.outputs), 6)
         switch = self.function("switch_model")
         switch_entry = next(fn for fn in self.functions.values() if fn.fn is switch)
-        self.assertEqual(len(switch_entry.outputs), 5)
+        self.assertEqual(len(switch_entry.outputs), 6)
+
+        selector_components = {
+            component.get("props", {}).get("elem_id"): component
+            for component in components
+            if component.get("props", {}).get("elem_id") in {
+                "speaker-select-field-1", "speaker-select-field-2",
+                "speaker-select-field-3", "speaker-select-field-4", "model-select-field",
+            }
+        }
+        self.assertEqual(len(selector_components), 5)
+        self.assertTrue(all(component.get("type") == "html" for component in selector_components.values()))
+        self.assertTrue(all("<select " in component["props"]["value"] for component in selector_components.values()))
+
+        dependencies_by_name = {
+            self.functions[dependency["id"]].fn.__name__: dependency
+            for dependency in self.interface.config["dependencies"]
+            if dependency["id"] in self.functions
+        }
+        for name in ("update_speaker_visibility", "refresh_voices", "generate_podcast_wrapper", "switch_model"):
+            self.assertIn("document.getElementById", dependencies_by_name[name]["js"])
+            self.assertIn("DOMParser", dependencies_by_name[name]["js"])
+
+    def test_native_select_markup_escapes_values_and_uses_valid_defaults(self):
+        special_voice = 'Guest & <Host> "A" / 音'
+        special_model = 'Model & <One> "v2" / 音'
+        demo = DemoStub()
+        demo.available_voices = {special_voice: "special.wav", "Second voice": "second.wav"}
+        demo.available_models = {special_model: "model-path"}
+        demo.model_path = special_model
+        interface = app_module.create_demo_interface(demo)
+        components = {
+            component.get("props", {}).get("elem_id"): component
+            for component in interface.config["components"]
+        }
+
+        speaker_markup = components["speaker-select-field-1"]["props"]["value"]
+        model_markup = components["model-select-field"]["props"]["value"]
+        speaker_options, selected_speaker = parse_select_markup(speaker_markup)
+        model_options, selected_model = parse_select_markup(model_markup)
+
+        self.assertEqual(speaker_options, [special_voice, "Second voice"])
+        self.assertEqual(selected_speaker, special_voice)
+        self.assertEqual(model_options, [special_model])
+        self.assertEqual(selected_model, special_model)
+        self.assertIn("Guest &amp; &lt;Host&gt; &quot;A&quot; / 音", speaker_markup)
+        self.assertIn("Model &amp; &lt;One&gt; &quot;v2&quot; / 音", model_markup)
+
+    def test_empty_native_selects_are_disabled_and_have_help_text(self):
+        demo = DemoStub()
+        demo.available_voices = {}
+        demo.available_models = {}
+        demo.model_path = "missing model"
+        interface = app_module.create_demo_interface(demo)
+        components = {
+            component.get("props", {}).get("elem_id"): component
+            for component in interface.config["components"]
+        }
+
+        for elem_id in (
+            "speaker-select-field-1", "speaker-select-field-2",
+            "speaker-select-field-3", "speaker-select-field-4", "model-select-field",
+        ):
+            markup = components[elem_id]["props"]["value"]
+            options, selected = parse_select_markup(markup)
+            self.assertEqual(options, [])
+            self.assertIsNone(selected)
+            self.assertIn(" disabled>", markup)
+            self.assertIn("No ", markup)
 
     def test_generation_callback_yields_six_outputs_for_start_stream_complete_and_save(self):
         stream_audio = np.array([0.1, 0.2], dtype=np.float32)
         complete_audio = (24000, np.array([0.2, -0.2], dtype=np.float32))
         self.demo.saved_audio_calls.clear()
-        self.demo.generate_podcast_streaming = lambda **_kwargs: iter([
-            (stream_audio, None, "stream chunk", True),
-            (None, None, "stream status", True),
-            (None, complete_audio, "generation complete", False),
-        ])
+        generated_requests = []
+
+        def mock_generate(**kwargs):
+            generated_requests.append(kwargs)
+            return iter([
+                (stream_audio, None, "stream chunk", True),
+                (None, None, "stream status", True),
+                (None, complete_audio, "generation complete", False),
+            ])
+
+        self.demo.generate_podcast_streaming = mock_generate
+        special_speakers = ['A & <One> "Q" / 音', "B / 二", "C", "D"]
 
         with patch.object(app_module, "cache_original_audio") as cache_audio:
             results = list(self.function("generate_podcast_wrapper")(
                 2,
                 "Speaker 1: Hello.\nSpeaker 2: Hi.",
-                "en-Alice_woman", "en-Carter_man", "en-Frank_man", "en-Maya_woman",
+                *special_speakers,
                 1.6, 10, True, 0.95, 0.95, 0, "", True, False, True,
             ))
 
@@ -138,8 +243,105 @@ class MainInterfaceTests(unittest.TestCase):
         self.assertIs(results[1][0], stream_audio)
         self.assertEqual(results[-1][1]["value"], complete_audio)
         self.assertIn("saved.wav", results[-1][2])
-        self.assertEqual(self.demo.saved_audio_calls, [(complete_audio, ["en-Alice_woman", "en-Carter_man"])])
+        self.assertEqual(self.demo.saved_audio_calls, [(complete_audio, special_speakers[:2])])
+        self.assertEqual(
+            [generated_requests[0][f"speaker_{i + 1}"] for i in range(4)],
+            special_speakers,
+        )
         cache_audio.assert_called_once_with(complete_audio)
+
+    def test_refresh_preserves_current_voice_and_falls_back_when_removed(self):
+        previous_voices = self.demo.available_voices
+        refreshed_voices = {"First & <new>": "first.wav", "Kept voice / 二": "kept.wav"}
+        self.demo.available_voices = refreshed_voices
+        try:
+            result = self.function("refresh_voices")(
+                "Kept voice / 二", "removed voice", "First & <new>", None
+            )
+        finally:
+            self.demo.available_voices = previous_voices
+
+        selected = [parse_select_markup(markup)[1] for markup in result]
+        self.assertEqual(selected, ["Kept voice / 二", "First & <new>", "First & <new>", "First & <new>"])
+        self.assertIn("First &amp; &lt;new&gt;", result[0])
+
+    def test_model_switch_refreshes_voice_choices_and_keeps_matching_speakers(self):
+        previous_models = self.demo.available_models
+        previous_voices = self.demo.available_voices
+        previous_model_path = self.demo.model_path
+        new_voices = {"New voice & one": "new.wav", "Kept voice": "kept.wav"}
+        self.demo.available_models = {"Test model": "test-model", "Second model": "second-model"}
+        self.demo.available_voices = {"Kept voice": "kept.wav", "Removed voice": "removed.wav"}
+        self.demo.model_path = "Test model"
+        try:
+            with patch.object(
+                self.demo,
+                "setup_voice_presets",
+                side_effect=lambda: setattr(self.demo, "available_voices", new_voices),
+            ):
+                result = self.function("switch_model")(
+                    "Second model", "Kept voice", "Removed voice", "Kept voice", "Removed voice"
+                )
+        finally:
+            self.demo.available_models = previous_models
+            self.demo.available_voices = previous_voices
+            self.demo.model_path = previous_model_path
+
+        self.assertEqual(parse_select_markup(result[1])[1], "Second model")
+        self.assertEqual([parse_select_markup(markup)[1] for markup in result[2:]], [
+            "Kept voice", "New voice & one", "Kept voice", "New voice & one",
+        ])
+        self.assertIn("New voice &amp; one", result[2])
+
+    def test_speaker_count_hides_and_restores_without_losing_four_values(self):
+        callback = self.function("update_speaker_visibility")
+        selected = ["en-Alice_woman", "en-Carter_man", "en-Frank_man", "en-Maya_woman"]
+        four_visible = callback(4, *selected)
+        two_visible = callback(2, *[parse_select_markup(item["value"])[1] for item in four_visible])
+        four_again = callback(4, *[parse_select_markup(item["value"])[1] for item in two_visible])
+
+        self.assertEqual([parse_select_markup(item["value"])[1] for item in four_again], [
+            "en-Alice_woman", "en-Carter_man", "en-Frank_man", "en-Maya_woman",
+        ])
+        self.assertEqual([item["visible"] for item in two_visible], [True, True, "hidden", "hidden"])
+        self.assertEqual([item["visible"] for item in four_again], [True, True, True, True])
+
+    def test_model_switch_receives_exact_native_value_and_preserves_state_on_failure(self):
+        previous_models = self.demo.available_models
+        previous_model_path = self.demo.model_path
+        previous_result = self.demo.switch_model_result
+        special_model = 'Voice & <Model> "A" / 音'
+        self.demo.available_models = {"Test model": "test-model", special_model: "special-model"}
+        self.demo.model_path = "Test model"
+        self.demo.switch_model_result = True
+        try:
+            success = self.function("switch_model")(
+                special_model, "en-Alice_woman", "en-Carter_man", "en-Frank_man", "en-Maya_woman"
+            )
+            self.assertEqual(self.demo.switch_model_calls[-1], special_model)
+            self.assertEqual(parse_select_markup(success[1])[1], special_model)
+
+            self.demo.switch_model_result = False
+            failed = self.function("switch_model")(
+                "Test model", "en-Alice_woman", "en-Carter_man", "en-Frank_man", "en-Maya_woman"
+            )
+            self.assertIn("Failed to switch", failed[0])
+            self.assertEqual(parse_select_markup(failed[1])[1], special_model)
+            self.assertEqual(self.demo.model_path, special_model)
+            self.assertTrue(all(update == {"__type__": "update"} for update in failed[2:]))
+
+            self.demo.switch_model_result = True
+            with patch.object(self.demo, "setup_voice_presets", side_effect=RuntimeError("voice refresh failed")):
+                setup_failed = self.function("switch_model")(
+                    "Test model", "en-Alice_woman", "en-Carter_man", "en-Frank_man", "en-Maya_woman"
+                )
+            self.assertIn("voice refresh failed", setup_failed[0])
+            self.assertEqual(parse_select_markup(setup_failed[1])[1], "Test model")
+            self.assertEqual(self.demo.model_path, "Test model")
+        finally:
+            self.demo.available_models = previous_models
+            self.demo.model_path = previous_model_path
+            self.demo.switch_model_result = previous_result
 
     def test_generation_callback_resets_all_six_outputs_after_error(self):
         def fail_generation(**_kwargs):

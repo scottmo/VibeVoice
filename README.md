@@ -229,7 +229,7 @@ python main.py --lod --hf-cache-dir "/path/to/cache"
 3. **Add custom voices**: Place voice samples in the `custom_voices/` directory (supports subdirectories)
 4. **Run the interface**: 
    - **Windows**: Double-click `run_vibevoice.bat` (easiest)
-   - **Other platforms**: Execute `python main.py`
+   - **macOS/Linux**: Run `./run_vibevoice.sh` (pass any `main.py` options after the script name)
 
 ### 🎵 Audio Controls
 

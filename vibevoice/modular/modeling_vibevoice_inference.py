@@ -184,9 +184,23 @@ class VibeVoiceForConditionalGenerationInference(VibeVoicePreTrainedModel, Gener
         # Tie lm_head.weight to language_model.embed_tokens.weight
         if not getattr(self.config, 'tie_word_embeddings', False):
             return
-         
-        if hasattr(self, 'lm_head') and hasattr(self.model.language_model, 'embed_tokens'):
-            self.lm_head.weight = self.model.language_model.embed_tokens.weight
+
+        embeddings = getattr(getattr(self.model, 'language_model', None), 'embed_tokens', None)
+        if hasattr(self, 'lm_head') and embeddings is not None:
+            self.lm_head.weight = embeddings.weight
+            target_key = 'lm_head.weight'
+            source_key = 'model.language_model.embed_tokens.weight'
+            if missing_keys is not None and target_key in missing_keys and source_key not in missing_keys:
+                # This checkpoint intentionally stores only the shared input
+                # embedding. Once tied to that loaded parameter, lm_head is
+                # not actually missing and should not appear in the load report.
+                if hasattr(missing_keys, 'discard'):
+                    missing_keys.discard(target_key)
+                else:
+                    try:
+                        missing_keys.remove(target_key)
+                    except ValueError:
+                        pass
         
     def get_input_embeddings(self):
         return self.model.get_input_embeddings()

@@ -8,7 +8,9 @@ switch only permits tokenizers and optional vocal-isolation weights.
 from __future__ import annotations
 
 import json
+import logging
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 import inspect
 from pathlib import Path
@@ -69,6 +71,36 @@ TOKENIZER_PATTERNS = [
     "*.model",
     "*.tiktoken",
 ]
+
+
+class _BitsAndBytesBf16CastLogFilter(logging.Filter):
+    """Hide only bitsandbytes' expected int8 BF16-to-FP16 cast notice."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not (
+            record.name == "bitsandbytes.autograd._functions"
+            and record.getMessage()
+            == "MatMul8bitLt: inputs will be cast from torch.bfloat16 to float16 during quantization"
+        )
+
+
+def _suppress_bitsandbytes_bf16_cast_notice() -> None:
+    logger = logging.getLogger("bitsandbytes.autograd._functions")
+    if not any(isinstance(existing, _BitsAndBytesBf16CastLogFilter) for existing in logger.filters):
+        logger.addFilter(_BitsAndBytesBf16CastLogFilter())
+
+
+@contextmanager
+def _transformers_warning_level():
+    """Keep routine Transformers load INFO messages out of app logs."""
+    from transformers.utils import logging as transformers_logging
+
+    previous_verbosity = transformers_logging.get_verbosity()
+    transformers_logging.set_verbosity_warning()
+    try:
+        yield
+    finally:
+        transformers_logging.set_verbosity(previous_verbosity)
 
 
 def _parse_bool(value: Any, *, name: str) -> bool:
@@ -558,17 +590,18 @@ def load_model_and_processor(
     if resolved.config_repo_id:
         config_path = _base_config_directory(resolved.config_repo_id, settings)
 
-    processor = VibeVoiceProcessor.from_pretrained(
-        str(source_dir),
-        tokenizer_path=str(tokenizer_path),
-        local_files_only=settings.hf_offline,
-        cache_dir=str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
-    )
-    model_config = VibeVoiceConfig.from_pretrained(
-        str(config_path),
-        local_files_only=settings.hf_offline,
-        cache_dir=str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
-    )
+    with _transformers_warning_level():
+        processor = VibeVoiceProcessor.from_pretrained(
+            str(source_dir),
+            tokenizer_path=str(tokenizer_path),
+            local_files_only=settings.hf_offline,
+            cache_dir=str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
+        )
+        model_config = VibeVoiceConfig.from_pretrained(
+            str(config_path),
+            local_files_only=settings.hf_offline,
+            cache_dir=str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
+        )
     kwargs: dict[str, Any] = {
         "config": model_config,
         "device_map": device,
@@ -596,18 +629,25 @@ def load_model_and_processor(
         quantization_options.get("load_in_4bit", quantization_options.get("_load_in_4bit", False)),
         name="load_in_4bit",
     )
+    is_8bit = _parse_bool(
+        quantization_options.get("load_in_8bit", quantization_options.get("_load_in_8bit", False)),
+        name="load_in_8bit",
+    )
     if quantization_config is not None and is_4bit:
         kwargs["dtype"] = torch.float16
+    if quantization_config is not None and is_8bit:
+        _suppress_bitsandbytes_bf16_cast_notice()
     model_path = str(resolved.model_dir)
     try:
-        try:
-            model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, **kwargs)
-        except Exception as first_error:
-            if attn_implementation == "sdpa":
-                raise
-            print(f"⚠️ {attn_implementation} failed, retrying with SDPA: {first_error}")
-            kwargs["attn_implementation"] = "sdpa"
-            model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, **kwargs)
+        with _transformers_warning_level():
+            try:
+                model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, **kwargs)
+            except Exception as first_error:
+                if attn_implementation == "sdpa":
+                    raise
+                print(f"⚠️ {attn_implementation} failed, retrying with SDPA: {first_error}")
+                kwargs["attn_implementation"] = "sdpa"
+                model = VibeVoiceForConditionalGenerationInference.from_pretrained(model_path, **kwargs)
     except ImportError as exc:
         if quantization_config is not None:
             raise RuntimeError(

@@ -40,16 +40,6 @@
 - **VRAM Efficient**: Isolation model is loaded, used, and unloaded before main generation to maximize available VRAM
 - **Debug Mode**: Use `--debug` to save voice samples at each processing stage to `custom_voices/debug/`
 
-### What's New (2025-09-21)
-
-- Dedicated AI Chat interface separate from the main script editor
-- Removed the "Regenerate Last" button (simpler, safer flow)
-- New "Feeling Lucky" button: one-click AI script + audio generation
-- Chat history with restore/delete and session persistence
-- Previous-round memory for better LLM script continuity; repeated prompts trigger a remix variation
-- More robust handling when the LLM returns fewer speakers than selected (no hard failure)
-- General UX/layout refinements for a smoother conversational scripting experience
-
 ### 🔧 Audio Quality Improvements (2025-01-XX)
 
 - **Fixed Audio Truncation Issue**: Resolved the problem where VibeVoice would cut off the last couple syllables ~60% of the time
@@ -93,12 +83,11 @@ A comprehensive Gradio interface for generating high-quality multi-speaker dialo
 ### ✨ Features
 
 - **Multi-Speaker Support**: Generate dialogue with up to 4 distinct speakers
+- **Manual Script Editor**: Enter dialogue directly and assign up to four selected voices to speaker labels
 - **Model Selection**: Choose between VibeVoice-7B-Preview and VibeVoice-1.5B models
 - **Vocal Isolation**: AI-powered removal of background music/noise from voice samples (enabled by default)
 - **Voice Normalization**: Automatically normalize voice sample volumes for consistent audio quality
 - **Advanced Settings**: Fine-tune generation parameters (CFG scale, diffusion steps, temperature, etc.)
-- **AI Script Generation**: Generate dialogue scripts using OpenAI GPT-4.1-mini or compatible servers
-- **OpenAI-Compatible Servers**: Support for local and third-party OAI-compatible LLM servers
 - **Load-on-Demand (LOD)**: Worker-based architecture that truly frees VRAM after each generation
 - **Offline Mode**: Run without internet using cached Hugging Face models
 - **Streaming Audio**: Real-time audio generation with live streaming support
@@ -192,11 +181,8 @@ python main.py --debug
 # Custom port
 python main.py --port 8080
 
-# Use local OpenAI-compatible server
-python main.py --lod --debug \
-  --script-ai-url "http://localhost:11434/v1" \
-  --script_ai_model "qwen2.5:7b-instruct" \
-  --script_ai_api_key ""
+# Use a local checkpoint and load it only when generation starts
+python main.py --model-source local --model-path VibeVoice-1.5B --lod
 
 # Use offline mode for Hugging Face models
 python main.py --lod --hf-offline
@@ -208,7 +194,7 @@ python main.py --lod --hf-cache-dir "/path/to/cache"
 ### 🔧 Setup
 
 1. **Install dependencies**: Follow the installation instructions below
-2. **Configure API keys**: Copy `.env-sample` to `.env` and add your API keys
+2. **Configure model loading (optional)**: Copy `.env-sample` to `.env` and set the model source or model directory
 3. **Add custom voices**: Place voice samples in the `custom_voices/` directory (supports subdirectories)
 4. **Run the interface**: 
    - **Windows**: Double-click `run_vibevoice.bat` (easiest)
@@ -229,69 +215,6 @@ VibeVoice includes built-in audio editing capabilities directly in the player:
 - **Visual Selection**: Click and drag on the waveform to select the desired portion
 - **Download Trimmed**: Download only the selected portion of the audio
 - **Gain Integration**: Gain adjustments work seamlessly with trimmed audio
-
-### 🤖 AI Script Generation
-
-VibeVoice supports AI-powered script generation using OpenAI or compatible servers. You can configure this via CLI arguments or environment variables.
-
-#### Quick Setup
-1. **Copy the sample file**: `cp .env-sample .env`
-2. **Edit `.env`**: Add your API keys and preferred settings
-3. **Run**: `python main.py`
-
-#### OpenAI Platform (Default)
-```bash
-# .env file
-OPENAI_API_KEY=sk-your-openai-key-here
-OPENAI_MODEL=gpt-4.1-mini  # Optional: change default model
-```
-
-#### OpenAI-Compatible Servers
-Support for local and third-party servers (Ollama, LM Studio, vLLM, etc.):
-
-**Via CLI (temporary):**
-```bash
-# Local Ollama server
-python main.py --lod --debug \
-  --script-ai-url "http://localhost:11434/v1" \
-  --script_ai_model "qwen2.5:7b-instruct" \
-  --script_ai-api-key ""
-
-# Remote server with API key
-python main.py --lod --debug \
-  --script-ai-url "https://api.example.com/v1" \
-  --script_ai_model "myorg/model-name" \
-  --script_ai-api-key "your-api-key"
-
-# Google Gemini API
-python main.py --lod --debug \
-  --script-ai-url "https://generativelanguage.googleapis.com/v1beta/openai" \
-  --script_ai_model "gemini-2.5-flash" \
-  --script_ai-api-key "your-gemini-api-key"
-```
-
-**Via .env file (persistent):**
-```bash
-# .env file
-SCRIPT_AI_URL=http://localhost:11434/v1
-SCRIPT_AI_MODEL=qwen2.5:7b-instruct
-SCRIPT_AI_API_KEY=
-
-# Optional: override default OpenAI model
-OPENAI_MODEL=gpt-4.1-mini
-```
-
-#### Configuration Precedence
-Settings are applied in this order (later overrides earlier):
-1. **Defaults**: `gpt-4.1-mini` model, OpenAI platform
-2. **Environment variables**: `.env` file settings
-3. **CLI arguments**: Command-line flags (highest priority)
-
-#### Supported Server Features
-- **Chat Completions**: Full support for `/v1/chat/completions` endpoint
-- **Multiple Response Formats**: Handles `choices[].message.content`, `choices[].text`, and `choices[].content`
-- **Auto URL Normalization**: Automatically appends `/v1` if missing
-- **Flexible API Keys**: Empty keys supported for local servers
 
 ### 🔄 Offline Mode
 
@@ -367,30 +290,6 @@ python main.py --model-source local --model-path "F:\Apps\ComfyUI\ComfyUI\models
 - **Custom voices**: Place in `custom_voices/` directory
 - **Subdirectories**: Organize voices into subdirectories (e.g., `custom_voices/characters/`, `custom_voices/narrators/`)
 - **Supported formats**: WAV, MP3, FLAC, OGG, M4A, AAC
-
-### 🔑 API Key Requirements
-
-**OpenAI Platform**: Requires `OPENAI_API_KEY` in `.env` file
-**Custom Servers**: API key optional (many local servers don't require one)
-
-Example `.env` file:
-```bash
-# OpenAI platform (required for default)
-OPENAI_API_KEY=sk-your-openai-key-here
-
-# Custom server (optional)
-SCRIPT_AI_URL=http://localhost:11434/v1
-SCRIPT_AI_MODEL=qwen2.5:7b-instruct
-SCRIPT_AI_API_KEY=
-
-# Google Gemini API (alternative)
-# SCRIPT_AI_URL=https://generativelanguage.googleapis.com/v1beta/openai
-# SCRIPT_AI_MODEL=gemini-2.5-flash
-# SCRIPT_AI_API_KEY=your-gemini-api-key
-
-# Default model override (optional)
-OPENAI_MODEL=gpt-4.1-mini
-```
 
 ---
 
@@ -570,7 +469,7 @@ pip install torch torchvision torchaudio
 pip install -e .
 ```
 
-This reads the project's `pyproject.toml` file and installs everything VibeVoice needs (transformers, gradio, librosa, openai, etc.). The `-e` ("editable") flag means Python uses the code right here in this folder, so any updates you `git pull` are picked up automatically.
+This reads the project's `pyproject.toml` file and installs everything VibeVoice needs, including transformers, gradio, and audio processing libraries. The `-e` ("editable") flag means Python uses the code right here in this folder, so any updates you `git pull` are picked up automatically.
 
 #### Step 5 (optional) — Install FlashAttention2 for faster generation
 
@@ -582,23 +481,9 @@ pip install flash-attn --no-build-isolation
 
 > **Windows users:** Building from source can be tricky. Pre-built wheels are available at [sunsetcoder/flash-attention-windows](https://github.com/sunsetcoder/flash-attention-windows).
 
-#### Step 6 — Configure your API key (for AI script generation)
+#### Step 6 (optional) — Configure model loading
 
-The AI scriptwriter needs an LLM API key. Copy the sample config and edit it:
-
-**Linux / macOS:**
-```bash
-cp .env-sample .env
-nano .env          # or open .env in any text editor
-```
-
-**Windows:**
-```cmd
-copy .env-sample .env
-notepad .env
-```
-
-Inside `.env`, replace `your-open-ai-key` with your actual API key. If you don't have an OpenAI key, you can use a **free Google Gemini key** — see the comments in `.env-sample` for details. AI script generation is optional; VibeVoice works without it.
+Copy `.env-sample` to `.env` if you want to set model-loading options in a file. The sample defaults to local checkpoints under `models/tts/`; command-line options can override these settings.
 
 #### Step 7 — Run VibeVoice
 
@@ -655,9 +540,7 @@ pip install -e .
 # 3. (Optional) Install FlashAttention2 if not bundled in your container
 pip install flash-attn --no-build-isolation
 
-# 4. Configure your API key and run
-cp .env-sample .env
-# edit .env with your API key
+# 4. Run the interface
 python main.py
 ```
 
@@ -668,7 +551,7 @@ python main.py
 For Windows users, we provide a convenient batch script:
 
 1. Follow the **Direct Installation** steps above
-2. Ensure `.env` is configured with your API key
+2. Optionally copy `.env-sample` to `.env` and configure model loading
 3. **Double-click** `run_vibevoice.bat` to launch
 
 The batch script will:
@@ -710,7 +593,7 @@ python demo/gradio_demo.py --model_path WestZhang/VibeVoice-Large-pt
 
 ### Usage 2: Inference from files directly
 ```bash
-# We provide some LLM generated example scripts under demo/text_examples/ for demo
+# Example scripts are available under demo/text_examples/
 # 1 speaker
 python demo/inference_from_file.py --model_path WestZhang/VibeVoice-Large-pt --txt_path demo/text_examples/1p_abs.txt --speaker_names Alice
 

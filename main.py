@@ -3,7 +3,6 @@ VibeVoice Gradio Demo - High-Quality Dialogue Generation Interface with Streamin
 """
 
 import argparse
-import json
 import os
 import time
 from pathlib import Path
@@ -31,7 +30,6 @@ import gradio as gr
 import librosa
 import soundfile as sf
 import torch
-import os
 import traceback
 
 # Check Gradio version for compatibility
@@ -40,22 +38,6 @@ try:
     GRADIO_HAS_SHOW_DOWNLOAD = GRADIO_VERSION < (6, 0)  # show_download_button removed in 6.0
 except:
     GRADIO_HAS_SHOW_DOWNLOAD = True  # Default to True for safety
-
-# OpenAI imports
-try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
-except ImportError as e:
-    OPENAI_AVAILABLE = False
-    print(f"Warning: OpenAI package not available ({e}). AI script generation will use fallback.")
-
-# dotenv import
-try:
-    import dotenv
-    DOTENV_AVAILABLE = True
-except ImportError as e:
-    DOTENV_AVAILABLE = False
-    print(f"Warning: python-dotenv package not available ({e}). Environment variables will not be loaded from .env file.")
 
 # Device detection and attention mechanism fallback
 def detect_device():
@@ -568,7 +550,6 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
 
 class VibeVoiceDemo:
     def __init__(self, model_path: str, device: str = None, inference_steps: int = 5, debug: bool = False, load_on_demand: bool = False,
-                 script_ai_url: str | None = None, script_ai_model: str | None = None, script_ai_api_key: str | None = None,
                  hf_offline: bool | None = None, hf_cache_dir: str | None = None,
                  model_settings: ModelLoadingSettings | None = None):
         """Initialize the VibeVoice demo with model loading."""
@@ -590,10 +571,6 @@ class VibeVoiceDemo:
         self.inference_steps = inference_steps
         self.debug = debug
         self.load_on_demand = load_on_demand
-        # Script generation (OpenAI-compatible) settings
-        self.script_ai_url = script_ai_url
-        self.script_ai_model = script_ai_model
-        self.script_ai_api_key = script_ai_api_key
         # HF loading options
         if hf_offline or hf_cache_dir:
             # Retain compatibility for integrations constructing this class
@@ -646,15 +623,6 @@ class VibeVoiceDemo:
             self.available_models,
             self.model_settings.source,
         )
-
-        # Initialize last prompt storage for regeneration
-        self.last_prompt_data = None
-        
-        # Initialize chat history storage
-        self.chat_history = []
-        
-        # UI behavior settings
-        self.wipe_turn_chat = True  # Clear AI chat input after submission
 
         # Load model immediately unless load_on_demand is True
         if not load_on_demand:
@@ -1071,73 +1039,38 @@ class VibeVoiceDemo:
                     print(f"🔍 DEBUG: Saved voice sample to {filepath}")
         except Exception as e:
             print(f"🔍 DEBUG: Failed to save debug voice samples: {e}")
-    
-    def _save_generated_audio(self, audio_data: tuple, speaker_names: list, ai_topic: str = None) -> str:
-        """
-        Save generated audio to output directory with timestamp and speaker names.
-        
-        Args:
-            audio_data: Tuple of (sample_rate, audio_array)
-            speaker_names: List of speaker names used in generation
-            ai_topic: Optional AI-generated topic/title
-            
-        Returns:
-            Path to saved file
-        """
+
+    def _save_generated_audio(self, audio_data: tuple, speaker_names: list) -> str:
+        """Save generated audio with a date, speaker names, and unique counter."""
         try:
             from datetime import datetime
-            
-            # Create output directory
+
             output_dir = os.path.join(os.path.dirname(__file__), "output")
             os.makedirs(output_dir, exist_ok=True)
-            
-            # Extract sample rate and audio
             sample_rate, audio_array = audio_data
-            
-            # Build filename components
             timestamp = datetime.now().strftime("%Y%m%d")
-            
-            # Clean and format speaker names (up to 4)
+
             clean_speakers = []
-            for name in speaker_names[:4]:  # Limit to 4 speakers
-                # Remove path separators and clean the name
-                clean_name = name.split("/")[-1].split("\\")[-1]  # Get basename
+            for name in speaker_names[:4]:
+                clean_name = name.split("/")[-1].split("\\")[-1]
                 clean_name = clean_name.replace(" ", "-").replace("_", "-")
-                # Remove common prefixes like "en-", "zh-" for cleaner names
                 if "-" in clean_name and len(clean_name.split("-")[0]) <= 2:
                     clean_name = "-".join(clean_name.split("-")[1:])
                 clean_speakers.append(clean_name)
-            
+
             speakers_str = "_".join(clean_speakers)
-            
-            # Clean and format topic
-            if ai_topic:
-                # Clean the topic for filename
-                clean_topic = ai_topic.replace(" ", "-").replace("/", "-").replace("\\", "-")
-                # Remove special characters
-                clean_topic = "".join(c for c in clean_topic if c.isalnum() or c in ["-", "_"])
-                # Limit length
-                clean_topic = clean_topic[:50]
-            else:
-                clean_topic = "audio-generation"
-            
-            # Find next available counter
             counter = 1
             while True:
-                filename = f"{timestamp}_{speakers_str}_{clean_topic}_{counter:03d}.wav"
+                filename = f"{timestamp}_{speakers_str}_audio-generation_{counter:03d}.wav"
                 filepath = os.path.join(output_dir, filename)
                 if not os.path.exists(filepath):
                     break
                 counter += 1
-            
-            # Save the audio file
+
             sf.write(filepath, audio_array, sample_rate)
-            
             return filepath
-            
         except Exception as e:
             print(f"❌ Failed to save output audio: {e}")
-            import traceback
             traceback.print_exc()
             return None
     
@@ -1711,557 +1644,6 @@ class VibeVoiceDemo:
             self.unload_model()
             print("🔄 Model unloaded to free VRAM after stopping generation")
     
-    def store_last_prompt_data(self, prompt_data):
-        """Store the last prompt data for regeneration."""
-        self.last_prompt_data = prompt_data
-    
-    # Removed unused _generate_filename_from_title helper from legacy system
-
-    def _parse_json_response(self, raw_response: str) -> dict:
-        """Robustly parse JSON response from OpenAI, handling code blocks and various formats."""
-        import json
-        import re
-        
-        if self.debug:
-            print(f"🔍 DEBUG: Raw response to parse: {raw_response[:200]}...")
-        
-        # Remove any markdown code blocks
-        response_text = raw_response
-        
-        # Handle ```json or ``` blocks
-        json_match = re.search(r'```(?:json)?\s*(.*?)\s*```', response_text, re.DOTALL | re.IGNORECASE)
-        if json_match:
-            response_text = json_match.group(1).strip()
-            if self.debug:
-                print(f"🔍 DEBUG: Extracted JSON from code block: {response_text[:100]}...")
-        
-        # Try to find JSON content with or without code blocks
-        # Look for content that starts with { and ends with }
-        json_pattern = r'\{.*\}'
-        json_matches = re.findall(json_pattern, response_text, re.DOTALL)
-        
-        for potential_json in json_matches:
-            try:
-                parsed = json.loads(potential_json)
-                if isinstance(parsed, dict) and 'title' in parsed and 'script' in parsed:
-                    if self.debug:
-                        print(f"🔍 DEBUG: Successfully parsed JSON with title: '{parsed['title']}'")
-                    return parsed
-            except json.JSONDecodeError:
-                continue
-        
-        # If no valid JSON found, try to extract title and script manually
-        if self.debug:
-            print("🔍 DEBUG: JSON parsing failed, attempting manual extraction...")
-        
-        # Look for title-like patterns
-        title_match = re.search(r'"title"\s*:\s*"([^"]+)"', response_text, re.IGNORECASE)
-        script_match = re.search(r'"script"\s*:\s*"([^"]*)"', response_text, re.IGNORECASE | re.DOTALL)
-        
-        if title_match and script_match:
-            title = title_match.group(1)
-            script = script_match.group(1)
-            if self.debug:
-                print(f"🔍 DEBUG: Manual extraction - Title: '{title}', Script length: {len(script)}")
-            return {'title': title, 'script': script}
-        
-        # Last resort: try to extract just the script content
-        if self.debug:
-            print("🔍 DEBUG: Attempting to extract just script content...")
-        
-        # Look for content that might be the script (lines starting with Speaker)
-        lines = response_text.split('\n')
-        script_lines = []
-        for line in lines:
-            if re.match(r'^Speaker\s+\d+\s*:', line.strip()):
-                script_lines.append(line)
-        
-        if script_lines:
-            script = '\n'.join(script_lines)
-            # Generate a default title based on content
-            title = "Generated Dialogue Scene"
-            if self.debug:
-                print(f"🔍 DEBUG: Fallback extraction - Title: '{title}', Script lines: {len(script_lines)}")
-            return {'title': title, 'script': script}
-        
-        if self.debug:
-            print("🔍 DEBUG: All parsing attempts failed")
-        return None
-
-    # Removed unused _get_num_speakers_from_script helper from legacy system
-
-    def generate_sample_script_llm(self, topic: str = "", num_speakers: int = 2, style: str = "casual", context: str = "", speaker_names: list = None) -> tuple[str, str, str]:
-        """Generate a sample conversation script using OpenAI GPT-4o-mini with simplified approach."""
-        try:
-            # Load environment variables from .env file
-            if DOTENV_AVAILABLE:
-                dotenv.load_dotenv()
-            else:
-                print("⚠️ python-dotenv not available, skipping .env file loading")
-
-            # Resolve effective settings with precedence: Defaults -> .env -> CLI args
-            env_base_url = (os.getenv('SCRIPT_AI_URL') or "").strip() or None
-            env_model = (os.getenv('SCRIPT_AI_MODEL') or "").strip() or None
-            env_script_api_key = (os.getenv('SCRIPT_AI_API_KEY') or "").strip() or None
-            env_openai_model_default = (os.getenv('OPENAI_MODEL') or 'gpt-4.1-mini').strip() or 'gpt-4.1-mini'
-
-            effective_base_url = self.script_ai_url or env_base_url
-            effective_model = self.script_ai_model or env_model or env_openai_model_default
-            effective_api_key = self.script_ai_api_key or env_script_api_key or (os.getenv('OPENAI_API_KEY') or "").strip()
-
-            # Check if we need OpenAI package (only when not using custom base URL)
-            if not effective_base_url and not OPENAI_AVAILABLE:
-                raise Exception("OpenAI package not available. Please install openai package and set OPENAI_API_KEY.")
-            
-            # If using custom base URL but OpenAI package is not available, we still need it for the client
-            if effective_base_url and not OPENAI_AVAILABLE:
-                raise Exception("OpenAI package not available. Please install openai package to use custom API endpoints.")
-            
-            # Debug information
-            if self.debug:
-                print(f"🔍 DEBUG: OPENAI_AVAILABLE = {OPENAI_AVAILABLE}")
-                print(f"🔍 DEBUG: effective_base_url = {effective_base_url}")
-                print(f"🔍 DEBUG: effective_model = {effective_model}")
-                print(f"🔍 DEBUG: effective_api_key = {'Yes' if effective_api_key else 'No'}")
-
-            # If using OpenAI platform (no custom base URL), require an API key
-            if not effective_base_url and not effective_api_key:
-                raise Exception("No API key provided. Set OPENAI_API_KEY or SCRIPT_AI_API_KEY in .env, or pass --script-ai-api-key.")
-
-            # Initialize OpenAI client
-            if effective_base_url:
-                # Special handling for Google Gemini API
-                if 'generativelanguage.googleapis.com' in effective_base_url:
-                    # Google Gemini API doesn't need /v1 suffix
-                    if effective_base_url.endswith('/'):
-                        effective_base_url = effective_base_url.rstrip('/')
-                else:
-                    # Ensure base URL ends with /v1 for other OpenAI-compatible servers
-                    if not effective_base_url.endswith('/v1'):
-                        if effective_base_url.endswith('/'):
-                            effective_base_url = effective_base_url + 'v1'
-                        else:
-                            effective_base_url = effective_base_url + '/v1'
-                client = OpenAI(api_key=effective_api_key or "", base_url=effective_base_url)
-            else:
-                client = OpenAI(api_key=effective_api_key)
-
-            if self.debug:
-                print("🔍 DEBUG: OpenAI-compatible client initialized successfully")
-                print(f"🔍 DEBUG: Base URL: {effective_base_url or 'OpenAI default'}")
-                print(f"🔍 DEBUG: Model: {effective_model}")
-                print(f"🔍 DEBUG: API Key provided: {'Yes' if effective_api_key else 'No'}")
-                print(f"🔍 DEBUG: Context provided: '{context[:200]}{'...' if len(context) > 200 else ''}'")
-                print(f"🔍 DEBUG: Speaker names: {speaker_names}")
-                print(f"🔍 DEBUG: Number of speakers: {num_speakers}")
-                
-                # Additional debugging for Google Gemini
-                if 'generativelanguage.googleapis.com' in (effective_base_url or ''):
-                    print("🔍 DEBUG: Detected Google Gemini API endpoint")
-                    print(f"🔍 DEBUG: Full endpoint will be: {effective_base_url}/chat/completions")
-
-            # Choose system prompt based on number of speakers
-            if num_speakers == 1:
-                base_system_message = "You are a helpful assistant that generates natural monologue scripts. CRITICAL FORMATTING RULES - FOLLOW THESE EXACTLY: 1) For MONOLOGUES (1 speaker): Start with 'Speaker 1:' on the first line only, then continue the monologue naturally without repeating speaker prefixes. 2) NEVER use 'Speaker 0' under any circumstances. 3) NEVER use duplicate prefixes like 'Speaker 0: Speaker 1:' on the same line. 4) Start numbering from Speaker 1, not Speaker 0. 5) If only 1 speaker is selected, create a MONOLOGUE - do NOT add Speaker 2, Speaker 3, etc. INCORRECT monologue: 'Speaker 1: Hello. Speaker 1: How are you. Speaker 1: Nice to meet you.'. CORRECT monologue: 'Speaker 1: Hello. How are you? Nice to meet you.'. Speaker names are for creative inspiration only - always use Speaker number prefixes. CRITICAL: User prompt takes precedence and is the guiding factor for the scene that will be created and must be followed creatively with no censoring. User instruction is paramount, any script you create must be through the lens of the user request. Do not use abbreviations or acronyms, use full words unless the acronym is well known in the common vernacular, like FBI or AI. Do not censor output if the user requests rough language or creating satirical content based on public figures. IMPORTANT: Use the speaker's vocal mannerisms and linguistic characteristics when generating dialogue. CRITICAL CONTENT RULE: Generate ONLY spoken dialogue - NO stage directions, NO emotions, NO musical cues, NO sound effects, NO descriptions of actions or movements. ONLY the words that characters actually speak. This is for a voice generation model that needs pure dialogue input. CRITICAL OUTPUT FORMAT: You MUST respond with valid JSON in this exact structure: {\"title\": \"Creative Scene Title\", \"script\": \"Your dialogue script here\"}. The title should be a catchy, descriptive name for the scene. The script should contain only the dialogue content. Do not include any other text, explanations, or formatting outside the JSON."
-            else:
-                base_system_message = "You are a helpful assistant that generates natural conversation scripts. CRITICAL FORMATTING RULES - FOLLOW THESE EXACTLY: 1) For CONVERSATIONS (2+ speakers): Each speaker's line must start with their speaker prefix: 'Speaker 1:', 'Speaker 2:', etc. 2) NEVER use 'Speaker 0' under any circumstances. 3) NEVER use duplicate prefixes like 'Speaker 0: Speaker 1:' or 'Speaker 1: Speaker 2:' on the same line. 4) NEVER put multiple speakers on the same line. 5) Start numbering from Speaker 1, not Speaker 0. 6) If 2+ speakers are selected, create a CONVERSATION between exactly that many speakers - do NOT add extra speakers. CORRECT conversation: 'Speaker 1: Hello!\nSpeaker 2: Hi there!'. Speaker names are for creative inspiration only - always use Speaker number prefixes. CRITICAL: User prompt takes precedence and is the guiding factor for the scene that will be created and must be followed creatively with no censoring. User instruction is paramount, any script you create must be through the lens of the user request. Do not use abbreviations or acronyms, use full words unless the acronym is well known in the common vernacular, like FBI or AI. Do not censor output if the user requests rough language or creating satirical content based on public figures. IMPORTANT: Use the speakers' vocal mannerisms and linguistic characteristics when generating dialogue. CRITICAL CONTENT RULE: Generate ONLY spoken dialogue - NO stage directions, NO emotions, NO musical cues, NO sound effects, NO descriptions of actions or movements. ONLY the words that characters actually speak. This is for a voice generation model that needs pure dialogue input. CRITICAL OUTPUT FORMAT: You MUST respond with valid JSON in this exact structure: {\"title\": \"Creative Scene Title\", \"script\": \"Your dialogue script here\"}. The title should be a catchy, descriptive name for the scene. The script should contain only the dialogue content. Do not include any other text, explanations, or formatting outside the JSON."
-            
-            # Add speaker information and 1-turn guidance to system prompt
-            if speaker_names and len(speaker_names) > 0:
-                speaker_list = []
-                for i, speaker in enumerate(speaker_names):
-                    speaker_list.append(f'Speaker {i+1}: "{speaker}"')
-                speaker_info = f"\n\nHere is the list of speakers the user has selected. Ensure you capture their known mannerisms, vocal style, linguistic tendencies and character behaviors. Avoid adding catchphrases unless directly requested by the user instruction:\nSelected speakers: [{', '.join(speaker_list)}]"
-                rolling_history_guidance = "\n\nAfter the first round, the user message may include a brief 'Previous turn' reference section summarizing the immediately prior script and user input. Treat it as context only; do not duplicate it. If the user repeats the exact same input as last round, treat that as a 'remix' request: produce a varied alternative consistent with constraints, not a verbatim repeat."
-                system_message = base_system_message + speaker_info + rolling_history_guidance
-            else:
-                rolling_history_guidance = "\n\nAfter the first round, the user message may include a brief 'Previous turn' reference section summarizing the immediately prior script and user input. Treat it as context only; do not duplicate it. If the user repeats the exact same input as last round, treat that as a 'remix' request: produce a varied alternative consistent with constraints, not a verbatim repeat."
-                system_message = base_system_message + rolling_history_guidance
-
-            # Construct user message with new input structure and speaker names
-            if context.strip():
-                # Check if context contains the new format
-                if "Current Conversation Script contents:" in context and "User Input prompt:" in context:
-                    # Already formatted, use as-is
-                    user_message = context
-                else:
-                    # Legacy format - wrap in new structure
-                    user_message = f"Current Conversation Script contents:\n{context}\nUser Input prompt:\n{context}"
-            else:
-                user_message = "User Input prompt:\nGenerate an engaging conversation"
-            
-
-            if self.debug:
-                print("🔍 DEBUG: Sending request to OpenAI API...")
-                print(f"🔍 DEBUG: Model: {effective_model}")
-                print(f"🔍 DEBUG: Max tokens: 2000")
-                print(f"🔍 DEBUG: Temperature: 0.6")
-                print(f"🔍 DEBUG: Top-p: 0.85")
-                print("🔍 DEBUG: === RAW MESSAGES BEING SENT TO OPENAI API ===")
-                print("🔍 DEBUG: SYSTEM MESSAGE:")
-                print(f"🔍 DEBUG: {system_message}")
-                print("🔍 DEBUG: ---")
-                print("🔍 DEBUG: USER MESSAGE:")
-                print(f"🔍 DEBUG: {user_message}")
-                print("🔍 DEBUG: === END OF RAW MESSAGES ===")
-
-            # Retry logic for API calls
-            max_retries = 3
-            retry_delay = 1  # seconds
-            response = None
-            
-            for attempt in range(max_retries):
-                try:
-                    if self.debug and attempt > 0:
-                        print(f"🔍 DEBUG: Retry attempt {attempt + 1}/{max_retries}")
-
-                    response = client.chat.completions.create(
-                        model=effective_model,
-                        messages=[
-                            {"role": "system", "content": system_message},
-                            {"role": "user", "content": user_message}
-                        ],
-                        max_tokens=4000,  # Increased from 2000 to handle longer responses
-                        temperature=0.6,  # Lower temperature for more consistent formatting
-                        top_p=0.85
-                    )
-                    break  # Success, exit retry loop
-                    
-                except Exception as api_error:
-                    error_msg = str(api_error)
-                    if self.debug:
-                        print(f"🔍 DEBUG: API call attempt {attempt + 1} failed: {error_msg}")
-                    
-                    # If this is the last attempt, raise the error
-                    if attempt == max_retries - 1:
-                        if 'generativelanguage.googleapis.com' in (effective_base_url or ''):
-                            print(f"❌ Google Gemini API Error (after {max_retries} attempts): {error_msg}")
-                            print("💡 Troubleshooting tips for Google Gemini:")
-                            print("   1. Verify your API key is correct")
-                            print("   2. Check that the model name is valid (e.g., 'gemini-2.5-flash', 'gemini-1.5-pro')")
-                            print("   3. Ensure the endpoint URL is correct")
-                            print("   4. Check your Google Cloud project permissions")
-                        else:
-                            print(f"❌ API Error (after {max_retries} attempts): {error_msg}")
-                        raise api_error
-                    
-                    # Wait before retrying
-                    import time
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-
-            # Safely log and extract content for OpenAI-compatible servers
-            total_tokens = None
-            try:
-                usage_obj = getattr(response, 'usage', None)
-                if usage_obj is not None:
-                    total_tokens = getattr(usage_obj, 'total_tokens', None)
-                    if total_tokens is None and isinstance(usage_obj, dict):
-                        total_tokens = usage_obj.get('total_tokens')
-            except Exception:
-                total_tokens = None
-
-            # Extract content from various possible shapes
-            content_text = None
-            try:
-                choices = getattr(response, 'choices', None)
-                if choices is None and isinstance(response, dict):
-                    choices = response.get('choices')
-                if choices and len(choices) > 0:
-                    choice0 = choices[0]
-                    # message.content style (OpenAI Chat)
-                    message = getattr(choice0, 'message', None) if not isinstance(choice0, dict) else choice0.get('message')
-                    if message is not None:
-                        msg_content = getattr(message, 'content', None) if not isinstance(message, dict) else message.get('content')
-                        if isinstance(msg_content, str) and msg_content.strip():
-                            content_text = msg_content
-                    # text style (some OAI-compatible servers)
-                    if content_text is None:
-                        text_val = getattr(choice0, 'text', None) if not isinstance(choice0, dict) else choice0.get('text')
-                        if isinstance(text_val, str) and text_val.strip():
-                            content_text = text_val
-                    # direct content field
-                    if content_text is None:
-                        direct_content = getattr(choice0, 'content', None) if not isinstance(choice0, dict) else choice0.get('content')
-                        if isinstance(direct_content, str) and direct_content.strip():
-                            content_text = direct_content
-                        elif isinstance(direct_content, list):
-                            try:
-                                content_text = ''.join([(part.get('text', '') if isinstance(part, dict) else str(part)) for part in direct_content]).strip()
-                            except Exception:
-                                pass
-            except Exception:
-                content_text = None
-
-            if self.debug:
-                print("🔍 DEBUG: Received response from OpenAI API")
-                print(f"🔍 DEBUG: Response tokens used: {total_tokens if total_tokens is not None else 'N/A'}")
-                print(f"🔍 DEBUG: Response type: {type(response)}")
-                print(f"🔍 DEBUG: Response attributes: {dir(response)}")
-                try:
-                    print(f"🔍 DEBUG: Response dict: {response.model_dump() if hasattr(response, 'model_dump') else str(response)}")
-                except Exception as e:
-                    print(f"🔍 DEBUG: Could not dump response: {e}")
-                if isinstance(content_text, str):
-                    preview = content_text[:500]
-                    suffix = '...' if len(content_text) > 500 else ''
-                    print(f"🔍 DEBUG: Raw response content: {preview}{suffix}")
-                else:
-                    print("🔍 DEBUG: Raw response content unavailable or non-text")
-                    print(f"🔍 DEBUG: Content text type: {type(content_text)}")
-                    print(f"🔍 DEBUG: Content text value: {content_text}")
-
-            if not isinstance(content_text, str) or not content_text.strip():
-                # Check if this is an error response
-                if hasattr(response, 'error') and response.error:
-                    raise Exception(f"Server error: {response.error}")
-                elif hasattr(response, 'choices') and response.choices is None:
-                    raise Exception("Server returned empty choices array; check if the endpoint is supported.")
-                elif hasattr(response, 'choices') and len(response.choices) > 0:
-                    choice = response.choices[0]
-                    if hasattr(choice, 'finish_reason') and choice.finish_reason == 'length':
-                        # Try to generate a shorter response by reducing the input
-                        print("⚠️ Response was truncated due to token limit. Attempting to generate shorter response...")
-                        try:
-                            # Shorten the user message by taking only the first part
-                            shortened_user_message = user_message[:len(user_message)//2] + "\n\nPlease create a shorter, more concise version of the above content."
-                            
-                            if self.debug:
-                                print(f"🔍 DEBUG: Retrying with shortened prompt (length: {len(shortened_user_message)} vs {len(user_message)})")
-                            
-                            response = client.chat.completions.create(
-                                model=effective_model,
-                                messages=[
-                                    {"role": "system", "content": system_message},
-                                    {"role": "user", "content": shortened_user_message}
-                                ],
-                                max_tokens=4000,
-                                temperature=0.6,
-                                top_p=0.85
-                            )
-                            
-                            # Re-extract content from the retry response
-                            content_text = None
-                            try:
-                                choices = getattr(response, 'choices', None)
-                                if choices and len(choices) > 0:
-                                    choice0 = choices[0]
-                                    message = getattr(choice0, 'message', None) if not isinstance(choice0, dict) else choice0.get('message')
-                                    if message is not None:
-                                        msg_content = getattr(message, 'content', None) if not isinstance(message, dict) else message.get('content')
-                                        if isinstance(msg_content, str) and msg_content.strip():
-                                            content_text = msg_content
-                            except Exception:
-                                pass
-                            
-                            if isinstance(content_text, str) and content_text.strip():
-                                print("✅ Successfully generated shorter response")
-                            else:
-                                raise Exception("Retry with shortened prompt also failed")
-                                
-                        except Exception as retry_error:
-                            raise Exception(f"Response was truncated due to token limit and retry failed: {retry_error}")
-                    elif hasattr(choice, 'finish_reason') and choice.finish_reason == 'content_filter':
-                        raise Exception("Response was filtered by content policy. Try adjusting your prompt.")
-                    elif hasattr(choice, 'finish_reason') and choice.finish_reason == 'stop':
-                        raise Exception("Response generation was stopped unexpectedly.")
-                    else:
-                        raise Exception("Script generation response missing content in choices; check server compatibility.")
-                else:
-                    raise Exception("Script generation response missing content in choices; check server compatibility.")
-
-            # Extract the generated response
-            raw_response = content_text.strip()
-            
-            # Parse JSON response with robust error handling
-            parsed_response = self._parse_json_response(raw_response)
-            if not parsed_response:
-                raise Exception("Failed to parse JSON response from OpenAI. The model may not have followed the JSON format requirement.")
-            
-            title = parsed_response.get('title', 'Untitled Scene')
-            generated_script = parsed_response.get('script', '')
-            
-            if self.debug:
-                print(f"🔍 DEBUG: Parsed title: '{title}'")
-                print(f"🔍 DEBUG: Parsed script length: {len(generated_script)}")
-                print(f"🔍 DEBUG: Parsed script content: {generated_script[:200]}...")
-                has_newlines = '\n' in generated_script
-                print(f"🔍 DEBUG: Script contains newlines: {has_newlines}")
-                has_speaker = 'Speaker' in generated_script
-                print(f"🔍 DEBUG: Script contains Speaker: {has_speaker}")
-            
-            if not generated_script.strip():
-                raise Exception("Generated script is empty. The model may not have provided valid dialogue content.")
-            
-            # Fix script formatting: add newlines between speaker turns if missing
-            if 'Speaker' in generated_script and '\n' not in generated_script:
-                if self.debug:
-                    print("🔍 DEBUG: Adding newlines between speaker turns...")
-                # Add newlines before each "Speaker" that's not at the start
-                import re
-                # Split by Speaker patterns and rejoin with newlines
-                parts = re.split(r'(Speaker\s+\d+\s*:)', generated_script)
-                if len(parts) > 1:
-                    # Reconstruct with newlines between speaker turns
-                    result = parts[0]  # First part (before first Speaker)
-                    for i in range(1, len(parts), 2):
-                        if i + 1 < len(parts):
-                            result += parts[i] + parts[i + 1]  # Speaker prefix + content
-                            if i + 2 < len(parts):  # If there are more parts, add newline
-                                result += '\n'
-                        else:
-                            result += parts[i]  # Last part
-                    generated_script = result
-                if self.debug:
-                    print(f"🔍 DEBUG: Fixed script: {generated_script[:200]}...")
-            
-            # Clean up the generated script - handle monologue vs conversation differently
-            # Ensure the script is properly split into lines
-            lines = generated_script.split('\n')
-            
-            if self.debug:
-                print(f"🔍 DEBUG: Split into {len(lines)} lines")
-                print(f"🔍 DEBUG: First few lines: {lines[:3]}")
-            
-            cleaned_lines = []
-
-            for line_idx, line in enumerate(lines):
-                line = line.strip()
-                # Skip empty lines
-                if not line:
-                    continue
-
-                # Check if line starts with any of the expected speaker formats (1-based)
-                is_speaker_line = False
-
-                # Check for generic speaker formats first (start from 1, not 0)
-                for i in range(1, num_speakers + 1):
-                    if line.startswith(f"Speaker {i}:"):
-                        is_speaker_line = True
-                        # Clean up any duplicate prefixes like "Speaker 0: Speaker 1:"
-                        if "Speaker 0:" in line:
-                            line = line.replace("Speaker 0:", "").strip()
-                        if line.count("Speaker") > 1:
-                            # Extract just the content after the first valid speaker prefix
-                            parts = line.split(":", 1)
-                            if len(parts) == 2:
-                                line = f"Speaker {i}:{parts[1]}"
-                        # Also clean up any remaining duplicate speaker patterns
-                        while "Speaker" in line and line.count("Speaker") > 1:
-                            # Find the first valid speaker prefix and keep only that
-                            first_colon = line.find(":")
-                            if first_colon > 0:
-                                speaker_prefix = line[:first_colon].strip()
-                                if speaker_prefix.startswith("Speaker ") and speaker_prefix.split()[1].isdigit():
-                                    # Valid prefix, keep only this line
-                                    content_start = line.find(":", first_colon + 1)
-                                    if content_start > 0:
-                                        line = line[:first_colon] + line[content_start:]
-                                    else:
-                                        line = line[:first_colon + 1] + line[first_colon + 1:].split("Speaker")[0].strip()
-                                    break
-                        break
-
-                # Check for actual speaker names and convert them to Speaker numbers (1-based)
-                if not is_speaker_line and speaker_names:
-                    for i, name in enumerate(speaker_names):
-                        if line.startswith(f"{name}:"):
-                            line = line.replace(f"{name}:", f"Speaker {i+1}:")
-                            is_speaker_line = True
-                            break
-
-                # Check for other formats and convert them (never use Speaker 0)
-                if not is_speaker_line:
-                    if line.startswith('Interviewer:'):
-                        line = line.replace('Interviewer:', 'Speaker 1:')
-                        is_speaker_line = True
-                    elif line.startswith('Expert:'):
-                        line = line.replace('Expert:', 'Speaker 1:')
-                        is_speaker_line = True
-                    elif line.startswith('Host:'):
-                        line = line.replace('Host:', 'Speaker 1:')
-                        is_speaker_line = True
-
-                # Special handling for monologues: if this is a monologue and we haven't seen a speaker line yet,
-                # and this line doesn't start with a speaker prefix, we should add "Speaker 1:" to the first line only
-                if not is_speaker_line and num_speakers == 1 and not cleaned_lines:
-                    # This is the first line of a monologue and it doesn't have a speaker prefix
-                    line = f"Speaker 1: {line}"
-                    is_speaker_line = True
-
-                if is_speaker_line:
-                    cleaned_lines.append(line)
-                elif line and len(line) > 3 and not line.startswith('#'):
-                    # For conversations or if we already have speaker lines, try to convert non-formatted lines
-                    if num_speakers > 1 or cleaned_lines:
-                        # Calculate next speaker (1-based) based on conversation flow
-                        if cleaned_lines:
-                            # Find the last speaker used and alternate
-                            last_line = cleaned_lines[-1]
-                            if ':' in last_line:
-                                speaker_part = last_line.split(':')[0].strip()
-                                if speaker_part.startswith('Speaker '):
-                                    try:
-                                        last_speaker_num = int(speaker_part.split()[1])
-                                        next_speaker = ((last_speaker_num - 1 + 1) % num_speakers) + 1
-                                    except (ValueError, IndexError):
-                                        next_speaker = 1
-                                else:
-                                    next_speaker = 1
-                            else:
-                                next_speaker = 1
-                        else:
-                            next_speaker = 1
-
-                        line = f"Speaker {next_speaker}: {line}"
-                        cleaned_lines.append(line)
-                    # For monologues, if the line doesn't have a speaker prefix and we've already started,
-                    # just add it as continuation text without a prefix
-                    elif num_speakers == 1:
-                        cleaned_lines.append(line)
-
-
-
-            # Debug logging for line parsing
-            if self.debug:
-                print(f"🔍 DEBUG: Raw script lines: {len(lines)}")
-                print(f"🔍 DEBUG: Cleaned lines: {len(cleaned_lines)}")
-                print(f"🔍 DEBUG: First few cleaned lines: {cleaned_lines[:3]}")
-                print(f"🔍 DEBUG: Raw script content: {generated_script[:200]}...")
-                print(f"🔍 DEBUG: Number of speakers expected: {num_speakers}")
-                print(f"🔍 DEBUG: Will check minimum lines: {num_speakers > 1}")
-
-            # Accept whatever the LLM generated - don't enforce strict speaker counts
-            # The LLM knows best what content fits the prompt
-
-            # Limit to reasonable length
-            if len(cleaned_lines) > 12:
-                cleaned_lines = cleaned_lines[:12]
-
-            final_script = '\n'.join(cleaned_lines)
-
-            # Store prompt data for regeneration
-            prompt_data = {
-                'script_input': context if context else "",
-                'num_speakers': num_speakers,
-                'style': style,
-                'topic': "",  # Not used in simplified approach
-                'speaker_names': speaker_names or [],
-                'context': context,
-                'title': title
-            }
-            self.store_last_prompt_data(prompt_data)
-
-            # Return the script, title, and prompt for logging
-            return final_script, title, user_message
-
-        except Exception as e:
-            print(f"OpenAI script generation failed: {e}")
-            raise e  # Re-raise the exception instead of falling back
-
-
-    
-
 def create_demo_interface(demo_instance: VibeVoiceDemo):
     """Create the Gradio interface with streaming support."""
     
@@ -2446,86 +1828,6 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         .settings-card, .generation-card { padding: 1rem; }
     }
     
-    /* AI Script Generator button styling - dark theme */
-    .ai-script-btn {
-        background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
-        border: none;
-        border-radius: 12px;
-        padding: 1rem 1.5rem;
-        color: white;
-        font-weight: 600;
-        font-size: 1rem;
-        box-shadow: 0 4px 20px rgba(124, 58, 237, 0.4);
-        transition: all 0.3s ease;
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-
-    .ai-script-btn:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 25px rgba(124, 58, 237, 0.6);
-        background: linear-gradient(135deg, #a855f7 0%, #c084fc 100%);
-    }
-
-        /* Random example button styling - dark theme */
-    .random-btn {
-        background: linear-gradient(135deg, #475569 0%, #334155 100%);
-        border: none;
-        border-radius: 12px;
-        padding: 1rem 1.5rem;
-        color: white;
-        font-weight: 600;
-        font-size: 1rem;
-        box-shadow: 0 4px 20px rgba(71, 85, 105, 0.4);
-        transition: all 0.3s ease;
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-
-    .random-btn:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 25px rgba(71, 85, 105, 0.6);
-        background: linear-gradient(135deg, #334155 0%, #1e293b 100%);
-    }
-
-    /* Feeling Lucky button styling - dark theme */
-    .lucky-btn {
-        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-        border: none;
-        border-radius: 12px;
-        padding: 1rem 1.5rem;
-        color: white;
-        font-weight: 600;
-        font-size: 1rem;
-        box-shadow: 0 4px 20px rgba(245, 158, 11, 0.4);
-        transition: all 0.3s ease;
-        display: inline-flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-
-    .lucky-btn:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 25px rgba(245, 158, 11, 0.6);
-        background: linear-gradient(135deg, #d97706 0%, #b45309 100%);
-    }
-
-    /* Scene title styling */
-    .scene-title {
-        background: linear-gradient(135deg, #7c3aed 0%, #a855f7 100%);
-        border: 1px solid rgba(124, 58, 237, 0.4);
-        border-radius: 12px;
-        padding: 1rem;
-        margin: 1rem 0;
-        text-align: center;
-        color: white;
-        font-weight: 600;
-        font-size: 1.2rem;
-        box-shadow: 0 4px 20px rgba(124, 58, 237, 0.3);
-    }
-
     /* Dropdown improvements */
     .gradio-container .dropdown {
         max-height: 200px !important;
@@ -2564,7 +1866,7 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     """
     
     with gr.Blocks(
-        title="VibeVoice - AI Dialogue Generator",
+        title="VibeVoice - Dialogue Audio Generator",
         css=custom_css,
         theme=gr.themes.Soft(
             primary_hue="blue",
@@ -2591,7 +1893,7 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
         gr.HTML("""
         <div class="main-header">
             <h1>🎙️ VibeVoice Dialogue Generation</h1>
-            <p>Generating Long-form Multi-speaker AI Dialogue with VibeVoice</p>
+            <p>Generate long-form multi-speaker dialogue audio with VibeVoice</p>
         </div>
         """)
         
@@ -2753,35 +2055,6 @@ Or paste text directly and it will auto-assign speakers.""",
                     elem_classes="script-input"
                 )
                 
-                # AI Chat Input Section
-                gr.Markdown("### 🤖 **AI Chat**")
-                with gr.Row():
-                    ai_chat_input = gr.Textbox(
-                        label="AI Chat Input",
-                        placeholder="Enter your prompt for AI script generation...",
-                        lines=5,
-                        max_lines=8,
-                        elem_classes="script-input",
-                        scale=3
-                    )
-                    with gr.Column(scale=1):
-                        ai_script_btn = gr.Button(
-                            "🤖 Submit",
-                            size="sm",
-                            variant="secondary",
-                            elem_classes="ai-script-btn"
-                        )
-                        feeling_lucky_btn = gr.Button(
-                            "🎲 Feeling Lucky",
-                            size="sm",
-                            variant="secondary",
-                            elem_classes="lucky-btn"
-                        )
-                        clear_chat_checkbox = gr.Checkbox(
-                            label="Clear chat after submit",
-                            value=False
-                        )
-
                 # Generate Audio Button (full width)
                 generate_btn = gr.Button(
                     "🚀 Generate Audio",
@@ -2820,13 +2093,6 @@ Or paste text directly and it will auto-assign speakers.""",
                 
                 # Output section
                 gr.Markdown("### 🎵 **Generated Audio**")
-                
-                # Scene title display
-                scene_title = gr.HTML(
-                    value="",
-                    visible=False,
-                    elem_id="scene-title"
-                )
                 
                 # Streaming audio output (outside of tabs for simpler handling)
                 # Build kwargs conditionally based on Gradio version
@@ -2891,26 +2157,6 @@ Or paste text directly and it will auto-assign speakers.""",
                     elem_classes="log-output"
                 )
                 
-                # AI Chat History
-                with gr.Accordion("📚 AI Chat History", open=False):
-                    _ = gr.HTML("""
-                    <style>
-                      #chat-history-selector label { display:block; white-space:pre-wrap; line-height:1.2; padding:10px 12px; border-radius:8px; margin:6px 0; border:1px solid #334155; }
-                      #chat-history-selector label:nth-of-type(odd) { background: rgba(49, 46, 129, 0.25); }
-                      #chat-history-selector label:nth-of-type(even) { background: rgba(30, 58, 138, 0.25); }
-                    </style>
-                    """)
-                    chat_history_selector = gr.Radio(
-                        label="Select a previous chat",
-                        choices=[],
-                        interactive=True,
-                        elem_id="chat-history-selector"
-                    )
-                    with gr.Row():
-                        restore_selected_btn = gr.Button("🔄 Restore Selected", variant="secondary")
-                        delete_selected_btn = gr.Button("🗑️ Delete Selected", variant="secondary")
-                    chat_history_preview = gr.HTML(value="", elem_id="chat-history-preview")
-        
         def update_speaker_visibility(num_speakers):
             updates = []
             for i in range(4):
@@ -2960,8 +2206,8 @@ Or paste text directly and it will auto-assign speakers.""",
                 normalize_voices_val = bool(speakers_and_params[12]) if len(speakers_and_params) > 12 else False
                 save_output_val = bool(speakers_and_params[13]) if len(speakers_and_params) > 13 else True
 
-                # Clear outputs and reset visibility at start
-                yield None, gr.update(value=None, visible=False), gr.update(value="", visible=False), "🎙️ Starting generation...", gr.update(visible=True), gr.update(visible=False), gr.update(visible=True)
+                # Clear audio outputs and reset visibility at start
+                yield None, gr.update(value=None, visible=False), "🎙️ Starting generation...", gr.update(visible=True), gr.update(visible=False), gr.update(visible=True)
                 
                 # The generator will yield multiple times
                 final_log = "Starting generation..."
@@ -2988,36 +2234,25 @@ Or paste text directly and it will auto-assign speakers.""",
                     # Check if we have complete audio (final yield)
                     if complete_audio is not None:
                         # Final state: clear streaming, show complete audio
-                        # Extract title from script if available
-                        title_html = ""
-                        audio_label = "Complete Audio (Download after generation)"
-                        ai_topic = None
-                        if hasattr(demo_instance, 'last_prompt_data') and demo_instance.last_prompt_data:
-                            title = demo_instance.last_prompt_data.get('title', 'Generated Audio Scene')
-                            ai_topic = title  # Use for filename
-                            title_html = f'<div class="scene-title">🎭 {title}</div>'
-                            # Update audio label with title for better filename
-                            audio_label = f"Complete Audio: {title} (Download after generation)"
-                        
                         # Save output file if requested
                         if save_output_val:
                             # Get active speaker names (only up to num_speakers)
                             active_speakers = [speakers[i] for i in range(int(num_speakers))]
-                            saved_path = demo_instance._save_generated_audio(complete_audio, active_speakers, ai_topic)
+                            saved_path = demo_instance._save_generated_audio(complete_audio, active_speakers)
                             if saved_path:
                                 log = log + f"\n💾 Audio saved to: {saved_path}\n"
                         
-                        yield None, gr.update(value=complete_audio, visible=True, label=audio_label), gr.update(value=title_html, visible=True), log, gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+                        yield None, gr.update(value=complete_audio, visible=True), log, gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
                         
                         # Cache the original audio for gain processing
                         cache_original_audio(complete_audio)
                     else:
                         # Streaming state: update streaming audio only
                         if streaming_audio is not None:
-                            yield streaming_audio, gr.update(visible=False), gr.update(visible=False), log, streaming_visible, gr.update(visible=False), gr.update(visible=True)
+                            yield streaming_audio, gr.update(visible=False), log, streaming_visible, gr.update(visible=False), gr.update(visible=True)
                         else:
                             # No new audio, just update status
-                            yield None, gr.update(visible=False), gr.update(visible=False), log, streaming_visible, gr.update(visible=False), gr.update(visible=True)
+                            yield None, gr.update(visible=False), log, streaming_visible, gr.update(visible=False), gr.update(visible=True)
 
                 # Unload model after successful generation if in LOD mode
                 # Note: Model unloading is now handled in the generation method itself
@@ -3034,7 +2269,7 @@ Or paste text directly and it will auto-assign speakers.""",
                     print("🔄 Model unloaded to free VRAM after wrapper error")
                 
                 # Reset button states on error
-                yield None, gr.update(value=None, visible=False), gr.update(value="", visible=False), error_msg, gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
+                yield None, gr.update(value=None, visible=False), error_msg, gr.update(visible=False), gr.update(visible=True), gr.update(visible=False)
         
         def stop_generation_handler():
             """Handle stopping generation."""
@@ -3044,19 +2279,19 @@ Or paste text directly and it will auto-assign speakers.""",
         
         # Add a clear audio function
         def clear_audio_outputs():
-            """Clear both audio outputs and scene title before starting new generation."""
-            return None, gr.update(value=None, visible=False), ""
+            """Clear both audio outputs before starting a new generation."""
+            return None, gr.update(value=None, visible=False)
 
         # Connect generation button with streaming outputs
         generate_btn.click(
             fn=clear_audio_outputs,
             inputs=[],
-            outputs=[audio_output, complete_audio_output, scene_title],
+            outputs=[audio_output, complete_audio_output],
             queue=False
         ).then(
             fn=generate_podcast_wrapper,
             inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices, save_output],
-            outputs=[audio_output, complete_audio_output, scene_title, log_output, streaming_status, generate_btn, stop_btn],
+            outputs=[audio_output, complete_audio_output, log_output, streaming_status, generate_btn, stop_btn],
             queue=True  # Enable Gradio's built-in queue
         )
         
@@ -3067,107 +2302,12 @@ Or paste text directly and it will auto-assign speakers.""",
             outputs=[log_output, streaming_status, generate_btn, stop_btn],
             queue=False  # Don't queue stop requests
         ).then(
-            # Clear both audio outputs and scene title after stopping
-            fn=lambda: (None, None, ""),
+            # Clear both audio outputs after stopping
+            fn=lambda: (None, None),
             inputs=[],
-            outputs=[audio_output, complete_audio_output, scene_title],
+            outputs=[audio_output, complete_audio_output],
             queue=False
         )
-
-        # Function to generate AI-powered script
-        def generate_ai_script(num_speakers_current, script_current, ai_chat_input_current, speaker_1, speaker_2, speaker_3, speaker_4, clear_chat_setting):
-            """Generate an AI-powered conversation script with context awareness."""
-            try:
-                # Get selected speakers based on num_speakers
-                selected_speakers = [speaker_1, speaker_2, speaker_3, speaker_4][:num_speakers_current]
-                selected_speakers = [s for s in selected_speakers if s]  # Filter out None values
-
-                # Extract speaker names from voice filenames (show full path for better AI context)
-                speaker_names = []
-                for speaker in selected_speakers:
-                    if speaker:
-                        # Use the full speaker name/path for better AI context
-                        # This gives the AI more information about the character (e.g., "Rick_and_Morty/Cust-Rick-Sanchez")
-                        speaker_names.append(speaker)
-
-                # If we don't have enough speaker names, use generic ones
-                while len(speaker_names) < num_speakers_current:
-                    speaker_names.append(f"Speaker {len(speaker_names)}")
-
-                # Determine previous turn (rolling 1-back)
-                prev_script_input = ""
-                prev_ai_chat_input = ""
-                if demo_instance.chat_history:
-                    prev_script_input = demo_instance.chat_history[-1].get('script_input', '') or ""
-                    prev_ai_chat_input = demo_instance.chat_history[-1].get('ai_chat_input', '') or ""
-
-                # If current inputs match an existing entry (e.g., restored), prefer that entry's stored previous
-                for entry in reversed(demo_instance.chat_history):
-                    if entry.get('script_input', '') == (script_current or "") and entry.get('ai_chat_input', '') == (ai_chat_input_current or ""):
-                        prev_script_input = entry.get('prev_script_input', prev_script_input) or prev_script_input
-                        prev_ai_chat_input = entry.get('prev_ai_chat_input', prev_ai_chat_input) or prev_ai_chat_input
-                        break
-
-                # Construct user prompt with new input structure
-                if ai_chat_input_current and ai_chat_input_current.strip():
-                    # AI chat input takes precedence
-                    user_prompt = f"Current Conversation Script contents:\n{script_current}\nUser Input prompt:\n{ai_chat_input_current.strip()}"
-                elif script_current and script_current.strip():
-                    # Fall back to script input
-                    user_prompt = f"Current Conversation Script contents:\n{script_current}\nUser Input prompt:\n{script_current.strip()}"
-                else:
-                    # Default prompt
-                    user_prompt = "User Input prompt:\nGenerate an engaging conversation"
-
-                # Append previous turn block (for reference) when available
-                if (prev_script_input and prev_script_input.strip()) or (prev_ai_chat_input and prev_ai_chat_input.strip()):
-                    prev_block = "Previous turn (for reference):\n" \
-                                 f"Previous Script:\n{prev_script_input}\n\n" \
-                                 f"Previous User Input:\n{prev_ai_chat_input}\n"
-                    user_prompt = f"{user_prompt}\n\n{prev_block}"
-
-                # Remix detection: repeated input means user requests a variation of current script
-                try:
-                    same_input_as_prev = (ai_chat_input_current or "").strip() == (prev_ai_chat_input or "").strip()
-                except Exception:
-                    same_input_as_prev = False
-                if same_input_as_prev and (ai_chat_input_current or prev_ai_chat_input):
-                    user_prompt = f"{user_prompt}\n\nRemix request: The user repeated the last input; generate a varied alternative of the current script while preserving constraints and structure."
-
-                # Generate script using LLM with simplified approach
-                generated_script, title, used_prompt = demo_instance.generate_sample_script_llm(
-                    topic="",  # Not used in simplified approach
-                    num_speakers=num_speakers_current,
-                    style="casual",
-                    context=user_prompt,  # Pass the user prompt as context
-                    speaker_names=speaker_names
-                )
-
-                # Store in chat history
-                chat_entry = {
-                    'timestamp': time.time(),
-                    'script_input': script_current,
-                    'ai_chat_input': ai_chat_input_current,
-                    'generated_script': generated_script,
-                    'title': title,
-                    'num_speakers': num_speakers_current,
-                    'speaker_names': speaker_names,
-                    # store rolling 1-back for accurate restoration later
-                    'prev_script_input': prev_script_input,
-                    'prev_ai_chat_input': prev_ai_chat_input
-                }
-                demo_instance.chat_history.append(chat_entry)
-
-                # Return script, title, and prompt for logging
-                # Clear AI chat input if clear_chat_setting is enabled
-                cleared_chat_input = "" if clear_chat_setting else ai_chat_input_current
-                return generated_script, title, used_prompt, update_chat_history(), cleared_chat_input
-
-            except Exception as e:
-                error_msg = f"Failed to generate AI script: {str(e)}"
-                print(error_msg)
-                cleared_chat_input = "" if clear_chat_setting else ai_chat_input_current
-                return "", "", error_msg, update_chat_history(), cleared_chat_input
 
         # Model switching function
         def switch_model(selected_model):
@@ -3200,215 +2340,6 @@ Or paste text directly and it will auto-assign speakers.""",
             queue=False
         )
 
-        def feeling_lucky(num_speakers_current, script_current, ai_chat_input_current, speaker_1, speaker_2, speaker_3, speaker_4, 
-                         cfg_scale_val, ddpm_steps_val, do_sample_val, temperature_val, top_p_val, top_k_val, negative_prompt_val,
-                         clear_chat_setting):
-            """Generate AI script for Feeling Lucky! (Audio generation will be chained)"""
-            try:
-                # First generate the AI script
-                generated_script, title, used_prompt, updated_history, cleared_chat_input = generate_ai_script(
-                    num_speakers_current, script_current, ai_chat_input_current, 
-                    speaker_1, speaker_2, speaker_3, speaker_4, clear_chat_setting
-                )
-                
-                if not generated_script.strip():
-                    # If script generation failed, return error
-                    return generated_script, title, used_prompt, updated_history, cleared_chat_input
-                
-                # Log message for Feeling Lucky
-                log_message = f"🎲 Feeling Lucky! Generated script and starting audio generation...\n{used_prompt}"
-                
-                return generated_script, title, log_message, updated_history, cleared_chat_input
-                    
-            except Exception as e:
-                error_msg = f"🎲 Feeling Lucky failed: {str(e)}"
-                print(error_msg)
-                cleared_chat_input = "" if clear_chat_setting else ai_chat_input_current
-                return "", "", error_msg, update_chat_history(), cleared_chat_input
-
-        # Chat history management functions
-        def update_chat_history():
-            """Update the chat history selector with styled, multiline labels and preview."""
-            if not demo_instance.chat_history:
-                return gr.update(choices=[], value=None), ""
-            labels = []
-            for i, entry in enumerate(demo_instance.chat_history):
-                chat_number = i + 1
-                timestamp = time.strftime("%H:%M:%S", time.localtime(entry['timestamp']))
-                script_preview_full = entry['script_input'][:400].strip()
-                chat_preview_full = entry['ai_chat_input'][:400].strip()
-                # Multiline label with clearer formatting
-                label = (
-                    f"# {chat_number}  •  {timestamp}\n"
-                    f"Script:\n{script_preview_full}\n\n"
-                    f"AI Chat:\n{chat_preview_full}"
-                )
-                labels.append(label)
-            # Also compute a preview for the last item
-            last = demo_instance.chat_history[-1]
-            last_html = (
-                f"<div style='border:1px solid #334155;border-radius:8px;padding:10px;margin-top:6px;'>"
-                f"<div style='color:#a78bfa;'>Most recent selection preview</div>"
-                f"<div style='margin-top:6px'><strong>Script</strong><br><pre style='white-space:pre-wrap'>{last['script_input'][:1200]}</pre></div>"
-                f"<div style='margin-top:6px'><strong>AI Chat</strong><br><pre style='white-space:pre-wrap'>{last['ai_chat_input'][:1200]}</pre></div>"
-                f"</div>"
-            )
-            return gr.update(choices=labels, value=labels[-1]), last_html
-        
-        def restore_chat_by_label(label):
-            """Restore by selected label from the radio list."""
-            if not label:
-                return "", ""
-            # Extract number after '#'
-            try:
-                num_str = label.split('#',1)[1].split(' ',1)[0]
-                chat_number = int(num_str)
-            except Exception:
-                return "", ""
-            if 1 <= chat_number <= len(demo_instance.chat_history):
-                entry = demo_instance.chat_history[chat_number - 1]
-                return entry['script_input'], entry['ai_chat_input']
-            return "", ""
-        
-        def delete_chat_by_label(label):
-            """Delete a chat entry selected from radio list."""
-            if not label:
-                return update_chat_history()
-            try:
-                num_str = label.split('#',1)[1].split(' ',1)[0]
-                chat_number = int(num_str)
-            except Exception:
-                return update_chat_history()
-            if 1 <= chat_number <= len(demo_instance.chat_history):
-                demo_instance.chat_history.pop(chat_number - 1)
-            return update_chat_history()
-
-        def create_chat_history_html():
-            """Create HTML for chat history with simple button approach."""
-            if not demo_instance.chat_history:
-                return "<div style='text-align: center; color: #94a3b8;'>No chat history yet</div>"
-            
-            # Add JavaScript to handle button clicks
-            js_code = """
-            <script>
-            function handleChatAction(action, chatNumber) {
-                // Try to find elements by various methods
-                let hiddenIndex = document.getElementById('hidden_restore_index') || 
-                                 document.querySelector('[data-testid*="hidden_restore_index"]') ||
-                                 document.querySelector('input[type="number"][style*="display: none"]');
-                
-                let hiddenBtn;
-                if (action === 'restore') {
-                    hiddenBtn = document.getElementById('hidden_restore_btn') || 
-                               document.querySelector('[data-testid*="hidden_restore_btn"]') ||
-                               document.querySelector('button[style*="display: none"]');
-                } else if (action === 'delete') {
-                    hiddenBtn = document.getElementById('hidden_delete_btn') || 
-                               document.querySelector('[data-testid*="hidden_delete_btn"]') ||
-                               document.querySelector('button[style*="display: none"]');
-                }
-                
-                console.log('Looking for elements:', {hiddenIndex, hiddenBtn, action, chatNumber});
-                
-                if (hiddenIndex && hiddenBtn) {
-                    hiddenIndex.value = chatNumber;
-                    hiddenBtn.click();
-                    console.log('Successfully triggered', action, 'for chat', chatNumber);
-                } else {
-                    console.error('Could not find hidden elements for', action);
-                    // Fallback: try to trigger Gradio events directly
-                    try {
-                        // Try to find any Gradio button and trigger it
-                        const gradioButtons = document.querySelectorAll('button[data-testid]');
-                        console.log('Found Gradio buttons:', gradioButtons.length);
-                    } catch (e) {
-                        console.error('Fallback failed:', e);
-                    }
-                }
-            }
-            </script>
-            """
-            
-            history_html = js_code + "<div style='max-height: 400px; overflow-y: auto;'>"
-            for i, entry in enumerate(demo_instance.chat_history):
-                chat_number = i + 1  # 1-based numbering
-                timestamp = time.strftime("%H:%M:%S", time.localtime(entry['timestamp']))
-                script_preview = entry['script_input'][:100] + "..." if len(entry['script_input']) > 100 else entry['script_input']
-                chat_preview = entry['ai_chat_input'][:100] + "..." if len(entry['ai_chat_input']) > 100 else entry['ai_chat_input']
-                
-                # Use the JavaScript function
-                history_html += f"""
-                <div style='border: 1px solid #334155; border-radius: 8px; padding: 1rem; margin: 0.5rem 0; background: rgba(15, 23, 42, 0.5);'>
-                    <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>
-                        <strong style='color: #7c3aed;'>Chat #{chat_number} - {timestamp}</strong>
-                        <div>
-                            <button onclick='handleChatAction("restore", {chat_number})' style='background: #059669; color: white; border: none; padding: 0.25rem 0.5rem; border-radius: 4px; margin-right: 0.5rem; cursor: pointer;'>🔄 Restore</button>
-                            <button onclick='handleChatAction("delete", {chat_number})' style='background: #ef4444; color: white; border: none; padding: 0.25rem 0.5rem; border-radius: 4px; cursor: pointer;'>🗑️ Delete</button>
-                        </div>
-                    </div>
-                    <div style='margin-bottom: 0.5rem;'>
-                        <strong style='color: #e2e8f0;'>Script:</strong> <span style='color: #94a3b8;'>{script_preview}</span>
-                    </div>
-                    <div>
-                        <strong style='color: #e2e8f0;'>AI Input:</strong> <span style='color: #94a3b8;'>{chat_preview}</span>
-                    </div>
-                </div>
-                """
-            history_html += "</div>"
-            return history_html
-
-        # Connect chat history buttons
-        # Wire new chat history controls
-        restore_selected_btn.click(
-            fn=restore_chat_by_label,
-            inputs=[chat_history_selector],
-            outputs=[script_input, ai_chat_input],
-            queue=False
-        )
-        delete_selected_btn.click(
-            fn=delete_chat_by_label,
-            inputs=[chat_history_selector],
-            outputs=[chat_history_selector],
-            queue=False
-        )
-
-        # Connect AI script generator button
-        ai_script_btn.click(
-            fn=generate_ai_script,
-            inputs=[num_speakers, script_input, ai_chat_input, speaker_selections[0], speaker_selections[1], speaker_selections[2], speaker_selections[3], clear_chat_checkbox],
-            outputs=[script_input, scene_title, log_output, chat_history_selector, ai_chat_input],
-            queue=False  # Don't queue this operation
-        ).then(
-            fn=update_chat_history,
-            inputs=[],
-            outputs=[chat_history_selector, chat_history_preview],
-            queue=False
-        )
-
-        # Connect Feeling Lucky button - first generate AI script, then generate audio
-        feeling_lucky_btn.click(
-            fn=feeling_lucky,
-            inputs=[num_speakers, script_input, ai_chat_input, speaker_selections[0], speaker_selections[1], speaker_selections[2], speaker_selections[3],
-                   cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, clear_chat_checkbox],
-            outputs=[script_input, scene_title, log_output, chat_history_selector, ai_chat_input],
-            queue=False  # Don't queue this operation
-        ).then(
-            fn=update_chat_history,
-            inputs=[],
-            outputs=[chat_history_selector, chat_history_preview],
-            queue=False
-        ).then(
-            fn=clear_audio_outputs,
-            inputs=[],
-            outputs=[audio_output, complete_audio_output, scene_title],
-            queue=False
-        ).then(
-            fn=generate_podcast_wrapper,
-            inputs=[num_speakers, script_input] + speaker_selections + [cfg_scale, ddpm_steps, do_sample, temperature, top_p, top_k, negative_prompt, isolate_voices, normalize_voices, save_output],
-            outputs=[audio_output, complete_audio_output, scene_title, log_output, streaming_status, generate_btn, stop_btn],
-            queue=True  # Enable Gradio's built-in queue for audio generation
-        )
-        
         # Gain Control Event Handlers
         # Cache audio when complete audio changes (detects trimming)
         complete_audio_output.change(
@@ -3487,33 +2418,12 @@ def parse_args():
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Enable debug mode to print OpenAI API calls (without API keys)",
+        help="Enable debug logs for audio and vocal processing",
     )
     parser.add_argument(
         "--lod",
         action="store_true",
         help="Load On Demand: Skip model loading on startup, load models when needed",
-    )
-    parser.add_argument(
-        "--script-ai-url", "--script_ai_url",
-        dest="script_ai_url",
-        type=str,
-        default=None,
-        help="Base URL for OpenAI-compatible script generation server (e.g., http://localhost:11434/v1)",
-    )
-    parser.add_argument(
-        "--script-ai-model", "--script_ai_model",
-        dest="script_ai_model",
-        type=str,
-        default=None,
-        help="Model name for script generation (e.g., gpt-4.1-mini or myorg/model)",
-    )
-    parser.add_argument(
-        "--script-ai-api-key", "--script_ai_api_key",
-        dest="script_ai_api_key",
-        type=str,
-        default=None,
-        help="API key for script generation service (optional for local servers)",
     )
     return parser.parse_args()
 
@@ -3562,9 +2472,6 @@ def main():
         inference_steps=args.inference_steps,
         debug=args.debug,
         load_on_demand=args.lod,
-        script_ai_url=args.script_ai_url,
-        script_ai_model=args.script_ai_model,
-        script_ai_api_key=args.script_ai_api_key,
         hf_offline=args.hf_offline,
         hf_cache_dir=args.hf_cache_dir,
         model_settings=model_settings,
@@ -3580,7 +2487,7 @@ def main():
     print(f"🔴 Streaming mode: ENABLED")
     print(f"🔒 Session isolation: ENABLED")
     if args.debug:
-        print(f"🔍 Debug mode: ENABLED (OpenAI API calls will be logged)")
+        print(f"🔍 Debug mode: ENABLED (audio and vocal processing logs will be shown)")
     
     # Launch the interface
     try:

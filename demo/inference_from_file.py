@@ -224,7 +224,7 @@ def parse_args():
 def main():
     args = parse_args()
     model_settings = settings_from_args(args)
-    model_path = args.model_path or default_model_name(model_settings, legacy_default="microsoft/VibeVoice-1.5B")
+    model_path = args.model_path or default_model_name(legacy_default="microsoft/VibeVoice-1.5B")
 
     # Initialize voice mapper
     voice_mapper = VoiceMapper()

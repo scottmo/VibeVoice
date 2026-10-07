@@ -1,9 +1,4 @@
-"""Shared configuration, discovery, and loading for VibeVoice model assets.
-
-The module deliberately separates TTS checkpoints from supporting assets. In
-local mode a missing TTS checkpoint is always an error; the support-download
-switch only permits tokenizers and optional vocal-isolation weights.
-"""
+"""Reuse local VibeVoice assets and download missing files from Hugging Face."""
 
 from __future__ import annotations
 
@@ -57,6 +52,7 @@ MODEL_ALIASES = {
     "VibeVoice-7B": "vibevoice/VibeVoice-7B",
     "VibeVoice-Large-Q8": "FabioSarracino/VibeVoice-Large-Q8",
     "VibeVoice-Large-pt": "WestZhang/VibeVoice-Large-pt",
+    "VibeVoice-7B-4bit": "DevParker/VibeVoice7b-low-vram (4-bit)",
 }
 TOKENIZER_REPOSITORIES = {
     "1.5B": ("Qwen/Qwen2.5-1.5B", "Qwen2.5-1.5B"),
@@ -132,14 +128,8 @@ load_project_env()
 
 
 def add_model_cli_arguments(parser: Any) -> None:
-    """Add the shared source/download options to an entrypoint parser."""
-    parser.add_argument("--model-source", choices=("local", "huggingface"), default=None)
+    """Add the shared model directory options to an entrypoint parser."""
     parser.add_argument("--models-dir", type=str, default=None)
-    support = parser.add_mutually_exclusive_group()
-    support.add_argument("--allow-support-downloads", dest="allow_support_downloads", action="store_true")
-    support.add_argument("--no-support-downloads", dest="allow_support_downloads", action="store_false")
-    parser.set_defaults(allow_support_downloads=None)
-    parser.add_argument("--hf-offline", action="store_true", default=None)
     parser.add_argument("--hf-cache-dir", type=str, default=None)
 
 
@@ -157,10 +147,7 @@ def launch_compatibly(interface: Any, **kwargs: Any) -> Any:
 
 @dataclass(frozen=True)
 class ModelLoadingSettings:
-    source: str
     models_dir: Path
-    allow_support_downloads: bool
-    hf_offline: bool
     hf_cache_dir: Optional[Path] = None
 
     @property
@@ -180,30 +167,11 @@ def _setting(cli_value: Any, env_name: str, default: Any) -> Any:
 
 def settings_from_args(args: Any = None) -> ModelLoadingSettings:
     """Resolve model settings using CLI > environment > compatible defaults."""
-    source = str(_setting(getattr(args, "model_source", None), "VIBEVOICE_MODEL_SOURCE", "huggingface")).strip().lower()
-    if source not in {"local", "huggingface"}:
-        raise ValueError("VIBEVOICE_MODEL_SOURCE must be 'local' or 'huggingface'")
-
     models_value = _setting(getattr(args, "models_dir", None), "VIBEVOICE_MODELS_DIR", "models")
     models_dir = Path(models_value).expanduser()
     if not models_dir.is_absolute():
         models_dir = PROJECT_ROOT / models_dir
     models_dir = models_dir.resolve()
-
-    support_value = _setting(
-        getattr(args, "allow_support_downloads", None),
-        "VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS",
-        "true",
-    )
-    allow_support_downloads = _parse_bool(support_value, name="VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS")
-
-    # Offline environment flags are intentionally sticky. In particular,
-    # setting support downloads true cannot override HF_HUB_OFFLINE=1.
-    offline_env = any(
-        _parse_bool(os.environ.get(name, "false"), name=name)
-        for name in ("VIBEVOICE_HF_OFFLINE", "HF_HUB_OFFLINE")
-    )
-    hf_offline = bool(getattr(args, "hf_offline", False)) or offline_env
 
     cache_value = (
         getattr(args, "hf_cache_dir", None)
@@ -215,27 +183,21 @@ def settings_from_args(args: Any = None) -> ModelLoadingSettings:
         cache_dir = PROJECT_ROOT / cache_dir
 
     return ModelLoadingSettings(
-        source=source,
         models_dir=models_dir,
-        allow_support_downloads=allow_support_downloads,
-        hf_offline=hf_offline,
         hf_cache_dir=cache_dir,
     )
 
 
-def default_model_name(settings: ModelLoadingSettings, legacy_default: Optional[str] = None) -> str:
+def default_model_name(legacy_default: Optional[str] = None) -> str:
     configured = os.environ.get("VIBEVOICE_MODEL")
     if configured:
         return configured.strip()
-    if settings.source == "local":
-        return "VibeVoice-1.5B"
     return legacy_default or "microsoft/VibeVoice-1.5B"
 
 
 def normalize_model_selection(
     model_name: str,
     available_models: Mapping[str, Any],
-    source: str,
 ) -> str:
     """Match a configured catalog alias to an actual UI choice when possible."""
     if model_name in available_models:
@@ -246,14 +208,12 @@ def normalize_model_selection(
     if repository is None:
         return model_name
 
-    if source == "local":
-        target_folder = repository["folder"].casefold()
-        for label, value in available_models.items():
-            label_name = Path(str(label)).name.casefold()
-            value_name = Path(str(value)).name.casefold()
-            if label_name == target_folder or value_name == target_folder:
-                return label
-        return model_name
+    target_folder = repository["folder"].casefold()
+    for label, value in available_models.items():
+        label_name = Path(str(label)).name.casefold()
+        value_name = Path(str(value)).name.casefold()
+        if label_name == target_folder or value_name == target_folder:
+            return label
 
     for label in available_models:
         if MODEL_ALIASES.get(label, label) == canonical:
@@ -354,7 +314,7 @@ def _snapshot_download(repo_id: str, destination: Path, settings: ModelLoadingSe
         repo_id=repo_id,
         local_dir=str(destination),
         cache_dir=str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
-        local_files_only=settings.hf_offline,
+        local_files_only=False,
         **kwargs,
     )).resolve()
 
@@ -364,12 +324,6 @@ def _base_config_directory(repo_id: str, settings: ModelLoadingSettings) -> Path
     config_dir = settings.tts_dir / "VibeVoice-7B-config"
     config_file = config_dir / "config.json"
     if not config_file.is_file():
-        if settings.hf_offline or not settings.allow_support_downloads:
-            reason = "HF offline mode is enabled" if settings.hf_offline else "supporting downloads are disabled"
-            raise RuntimeError(
-                f"The selected quantized checkpoint needs the 7B base config, missing from {config_dir}; {reason}. "
-                "Allow supporting downloads or place config.json there."
-            )
         _snapshot_download(
             repo_id,
             config_dir,
@@ -420,7 +374,7 @@ class ResolvedModel:
 
 
 def resolve_model(model_name: str, settings: ModelLoadingSettings) -> ResolvedModel:
-    """Resolve a user selection to validated local files or an allowed download."""
+    """Reuse a complete local checkpoint or download its missing repository files."""
     candidate = Path(model_name).expanduser()
     anchored_candidate = candidate if candidate.is_absolute() else (PROJECT_ROOT / candidate)
     if candidate.is_absolute() or anchored_candidate.exists():
@@ -428,24 +382,9 @@ def resolve_model(model_name: str, settings: ModelLoadingSettings) -> ResolvedMo
         config = validate_tts_model(model_dir)
         return ResolvedModel(model_dir.resolve(), config, settings)
 
-    if settings.source == "local":
-        local_name = model_name.rsplit("/", 1)[-1] if model_name in DEFAULT_MODEL_REPOSITORIES else model_name
-        if model_name in MODEL_ALIASES:
-            local_name = MODEL_ALIASES[model_name].rsplit("/", 1)[-1]
-        # Repository IDs often have names which differ from the imported
-        # directory; use the canonical catalog destination when known.
-        canonical_repo = MODEL_ALIASES.get(model_name, model_name)
-        if canonical_repo in DEFAULT_MODEL_REPOSITORIES:
-            local_name = DEFAULT_MODEL_REPOSITORIES[canonical_repo]["folder"]
-        local_candidate = settings.tts_dir / local_name
-        try:
-            config = validate_tts_model(local_candidate)
-        except ValueError as exc:
-            raise ValueError(
-                f"Local VibeVoice model '{model_name}' is unavailable or incomplete at {local_candidate}: {exc}. "
-                "Place a complete TTS model folder under models/tts/<model-name>. "
-                "Local mode never downloads replacement TTS weights."
-            ) from exc
+    if model_name not in MODEL_ALIASES and model_name not in DEFAULT_MODEL_REPOSITORIES and "/" not in model_name:
+        local_candidate = settings.tts_dir / model_name
+        config = validate_tts_model(local_candidate)
         return ResolvedModel(local_candidate.resolve(), config, settings)
 
     repository = _repository_for_model(model_name)
@@ -455,13 +394,10 @@ def resolve_model(model_name: str, settings: ModelLoadingSettings) -> ResolvedMo
             load_dir = destination / repository["subfolder"] if repository.get("subfolder") else destination
             return _resolved_from_repository(destination, load_dir, repository, settings)
         except ValueError:
-            if settings.hf_offline:
-                raise
+            pass
     download_options = {}
     if repository.get("subfolder"):
         download_options["allow_patterns"] = [f"{repository['subfolder']}/**"]
-    # local_files_only is set by _snapshot_download when offline; this can
-    # materialize an already cached repo without making network requests.
     model_dir = _snapshot_download(repository["repo_id"], destination, settings, **download_options)
     load_dir = model_dir / repository["subfolder"] if repository.get("subfolder") else model_dir
     return _resolved_from_repository(model_dir, load_dir, repository, settings)
@@ -507,12 +443,6 @@ def resolve_tokenizer_path(resolved: ResolvedModel) -> Path:
     destination = resolved.settings.tokenizers_dir / folder
     if _has_tokenizer_files(destination):
         return destination.resolve()
-    if resolved.settings.hf_offline or not resolved.settings.allow_support_downloads:
-        reason = "HF offline mode is enabled" if resolved.settings.hf_offline else "supporting downloads are disabled"
-        raise RuntimeError(
-            f"Tokenizer {repo_id} is missing from {model_dir} and {destination}; {reason}. "
-            "Add the tokenizer files locally or allow supporting downloads."
-        )
     downloaded = _snapshot_download(
         repo_id,
         destination,
@@ -594,19 +524,19 @@ def load_model_and_processor(
         processor = VibeVoiceProcessor.from_pretrained(
             str(source_dir),
             tokenizer_path=str(tokenizer_path),
-            local_files_only=settings.hf_offline,
+            local_files_only=True,
             cache_dir=str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
         )
         model_config = VibeVoiceConfig.from_pretrained(
             str(config_path),
-            local_files_only=settings.hf_offline,
+            local_files_only=True,
             cache_dir=str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
         )
     kwargs: dict[str, Any] = {
         "config": model_config,
         "device_map": device,
         "attn_implementation": attn_implementation,
-        "local_files_only": settings.hf_offline,
+        "local_files_only": True,
         "cache_dir": str(settings.hf_cache_dir) if settings.hf_cache_dir else None,
     }
     if torch_dtype is not None:
@@ -660,9 +590,5 @@ def load_model_and_processor(
 
 
 def download_support_asset(repo_id: str, destination: str | Path, settings: ModelLoadingSettings, **kwargs: Any) -> Path:
-    """Fetch an optional support asset only when policy permits it."""
-    if settings.hf_offline:
-        raise RuntimeError("HF offline mode prohibits all downloads")
-    if not settings.allow_support_downloads:
-        raise RuntimeError("Supporting downloads are disabled by VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS")
+    """Fetch a supporting asset into its local directory."""
     return _snapshot_download(repo_id, Path(destination), settings, **kwargs)

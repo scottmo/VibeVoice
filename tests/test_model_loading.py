@@ -40,38 +40,21 @@ class ModelLoadingTests(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
-    def settings(self, source="local", *, support=True, offline=False, models_dir=None):
-        return ModelLoadingSettings(
-            source=source,
-            models_dir=Path(models_dir or self.models),
-            allow_support_downloads=support,
-            hf_offline=offline,
-        )
+    def settings(self, *, models_dir=None):
+        return ModelLoadingSettings(models_dir=Path(models_dir or self.models))
 
-    def test_cli_settings_override_environment_and_windows_paths_anchor(self):
-        env = {
-            "VIBEVOICE_MODEL_SOURCE": "local",
-            "VIBEVOICE_MODELS_DIR": "models",
-            "VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS": "true",
-            "HF_HUB_OFFLINE": "0",
-        }
-        args = SimpleNamespace(
-            model_source="huggingface",
-            models_dir="F:\\VibeVoice Models",
-            allow_support_downloads=False,
-            hf_offline=True,
-            hf_cache_dir=None,
-        )
+    def test_cli_settings_override_environment_and_relative_cache_path_anchors(self):
+        env = {"VIBEVOICE_MODELS_DIR": "models", "HF_HOME": "cache"}
+        custom_models = self.root / "VibeVoice Models"
+        args = SimpleNamespace(models_dir=str(custom_models), hf_cache_dir="custom-cache")
         with patch.dict(os.environ, env, clear=True):
             resolved = loading.settings_from_args(args)
-        self.assertEqual(resolved.source, "huggingface")
-        self.assertEqual(str(resolved.models_dir), "F:\\VibeVoice Models")
-        self.assertFalse(resolved.allow_support_downloads)
-        self.assertTrue(resolved.hf_offline)
+        self.assertEqual(resolved.models_dir, custom_models.resolve())
+        self.assertEqual(resolved.hf_cache_dir, loading.PROJECT_ROOT / "custom-cache")
 
-    def test_huggingface_remains_default_without_source_setting(self):
+    def test_default_settings_use_project_models_directory(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(loading.settings_from_args().source, "huggingface")
+            self.assertEqual(loading.settings_from_args().models_dir, loading.PROJECT_ROOT / "models")
 
     def test_relative_model_paths_resolve_from_repository_root(self):
         project = self.root / "checkout"
@@ -100,18 +83,41 @@ class ModelLoadingTests(unittest.TestCase):
         discovered = loading.discover_local_models(self.settings())
         self.assertEqual(set(discovered), {"VibeVoice-1.5B", "VibeVoice-7B", "VibeVoice-Large-Q8"})
 
-    def test_missing_shard_is_actionable_and_local_mode_never_downloads_replacement(self):
+    def test_incomplete_named_checkpoint_downloads_missing_files(self):
         model = write_model(self.models / "tts" / "VibeVoice-1.5B", complete=False)
         with self.assertRaisesRegex(ValueError, "missing shard"):
             loading.validate_tts_model(model)
+
+        def repair(_repo, destination, _settings, **_kwargs):
+            return write_model(destination)
+
+        with patch.object(loading, "_snapshot_download", side_effect=repair) as download:
+            resolved = loading.resolve_model("VibeVoice-1.5B", self.settings())
+        self.assertEqual(resolved.model_dir, model.resolve())
+        download.assert_called_once_with("microsoft/VibeVoice-1.5B", model, self.settings())
+
+    def test_incomplete_explicit_checkpoint_fails_without_guessing_repository(self):
+        model = write_model(self.root / "explicit-model", complete=False)
         with patch.object(loading, "_snapshot_download") as download:
-            with self.assertRaisesRegex(ValueError, "model-00001-of-00001.safetensors"):
-                loading.resolve_model("VibeVoice-1.5B", self.settings())
-            with self.assertRaisesRegex(ValueError, "never downloads replacement TTS weights"):
-                loading.resolve_model("VibeVoice-7B", self.settings())
+            with self.assertRaisesRegex(ValueError, "missing shard"):
+                loading.resolve_model(str(model), self.settings())
         download.assert_not_called()
 
-    def test_catalog_aliases_resolve_in_local_mode(self):
+    def test_custom_local_model_name_is_reused(self):
+        model = write_model(self.models / "tts" / "Custom-TTS")
+        with patch.object(loading, "_snapshot_download") as download:
+            resolved = loading.resolve_model("Custom-TTS", self.settings())
+        self.assertEqual(resolved.model_dir, model.resolve())
+        download.assert_not_called()
+
+    def test_custom_repository_reuses_matching_local_folder(self):
+        model = write_model(self.models / "tts" / "Custom-TTS")
+        with patch.object(loading, "_snapshot_download") as download:
+            resolved = loading.resolve_model("organization/Custom-TTS", self.settings())
+        self.assertEqual(resolved.model_dir, model.resolve())
+        download.assert_not_called()
+
+    def test_catalog_aliases_reuse_local_checkpoints(self):
         one_point_five = write_model(self.models / "tts" / "VibeVoice-1.5B")
         seven_b = write_model(self.models / "tts" / "VibeVoice-7B", 3584)
         q8 = write_model(
@@ -139,20 +145,20 @@ class ModelLoadingTests(unittest.TestCase):
             "VibeVoice-Large-Q8": "VibeVoice-Large-Q8",
         }
         self.assertEqual(
-            loading.normalize_model_selection("microsoft/VibeVoice-1.5B", choices, "local"),
+            loading.normalize_model_selection("microsoft/VibeVoice-1.5B", choices),
             "VibeVoice-1.5B",
         )
         self.assertEqual(
-            loading.normalize_model_selection("WestZhang/VibeVoice-Large-pt", choices, "local"),
+            loading.normalize_model_selection("WestZhang/VibeVoice-Large-pt", choices),
             "VibeVoice-7B",
         )
         self.assertEqual(
-            loading.normalize_model_selection("FabioSarracino/VibeVoice-Large-Q8", choices, "local"),
+            loading.normalize_model_selection("FabioSarracino/VibeVoice-Large-Q8", choices),
             "VibeVoice-Large-Q8",
         )
         online_choices = {"microsoft/VibeVoice-1.5B": "microsoft/VibeVoice-1.5B"}
         self.assertEqual(
-            loading.normalize_model_selection("VibeVoice-1.5B", online_choices, "huggingface"),
+            loading.normalize_model_selection("VibeVoice-1.5B", online_choices),
             "microsoft/VibeVoice-1.5B",
         )
 
@@ -200,7 +206,7 @@ class ModelLoadingTests(unittest.TestCase):
         self.assertTrue(BitsAndBytesConfig.from_dict(received["config"].quantization_config).load_in_8bit)
 
     def test_huggingface_download_uses_canonical_project_destination_and_reuses_assets(self):
-        settings = self.settings("huggingface")
+        settings = self.settings()
         calls = []
 
         def download_model(repo_id, destination, _settings, **kwargs):
@@ -248,7 +254,7 @@ class ModelLoadingTests(unittest.TestCase):
         load_tokenizer.assert_called_once_with("C:/assets/text_vocab")
 
     def test_tokenizer_download_is_scoped_to_tokenizer_folder_and_reused(self):
-        settings = self.settings(support=True)
+        settings = self.settings()
         model_path = write_model(self.models / "tts" / "VibeVoice-7B", 3584)
         resolved_model = loading.resolve_model("VibeVoice-7B", settings)
         calls = []
@@ -257,7 +263,7 @@ class ModelLoadingTests(unittest.TestCase):
             calls.append((repo_id, destination, kwargs))
             destination.mkdir(parents=True, exist_ok=True)
             (destination / "tokenizer.json").write_text("{}", encoding="utf-8")
-            return destination
+            return destination.resolve()
 
         with patch.object(loading, "_snapshot_download", side_effect=fake_download):
             tokenizer_path = loading.resolve_tokenizer_path(resolved_model)
@@ -270,35 +276,43 @@ class ModelLoadingTests(unittest.TestCase):
         self.assertEqual(cached_path, tokenizer_path)
         self.assertFalse((model_path / "tokenizer.json").exists())
 
-    def test_offline_environment_blocks_vocal_and_support_asset_downloads(self):
-        from vibevoice.utils.vocal_isolation import get_model_path
+    def test_support_asset_download_is_allowed(self):
+        settings = self.settings()
+        destination = self.models / "support"
+        with patch.object(loading, "_snapshot_download", return_value=destination) as download:
+            self.assertEqual(loading.download_support_asset("org/model", destination, settings), destination)
+        download.assert_called_once_with("org/model", destination, settings)
 
-        settings = self.settings(support=True, offline=True)
-        with self.assertRaisesRegex(RuntimeError, "offline mode prohibits downloads"):
-            get_model_path(settings)
-        with patch.object(loading, "_snapshot_download") as download:
-            with self.assertRaisesRegex(RuntimeError, "offline mode prohibits"):
-                loading.download_support_asset("org/model", self.models / "support", settings)
-        download.assert_not_called()
+    def test_snapshot_download_allows_network_and_uses_configured_cache(self):
+        settings = ModelLoadingSettings(self.models, self.root / "cache")
+        destination = self.models / "support"
+        with patch("huggingface_hub.snapshot_download", return_value=str(destination)) as download:
+            loading.download_support_asset("org/model", destination, settings)
+        download.assert_called_once_with(
+            repo_id="org/model",
+            local_dir=str(destination),
+            cache_dir=str(settings.hf_cache_dir),
+            local_files_only=False,
+        )
 
-    def test_vocal_isolation_honors_cli_models_dir_and_offline_override(self):
-        from vibevoice.utils.vocal_isolation import get_model_path
+    def test_vocal_isolation_downloads_into_configured_root_and_reuses_weights(self):
+        from vibevoice.utils import vocal_isolation
 
         custom = self.root / "custom-model-root"
-        args = SimpleNamespace(
-            model_source=None,
-            models_dir=str(custom),
-            allow_support_downloads=True,
-            hf_offline=True,
-            hf_cache_dir=None,
-        )
-        with patch.dict(os.environ, {"VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS": "true", "HF_HUB_OFFLINE": "0"}, clear=True):
-            settings = loading.settings_from_args(args)
-        with self.assertRaisesRegex(RuntimeError, str(custom).replace("\\", "\\\\")):
-            get_model_path(settings)
+        settings = self.settings(models_dir=custom)
+        expected = custom / "vocal_isolation" / "MelBandRoformer" / "MelBandRoformer.ckpt"
+
+        def write_weights(_directory, _settings):
+            expected.parent.mkdir(parents=True)
+            expected.write_bytes(b"fixture weights")
+
+        with patch.object(vocal_isolation, "download_model", side_effect=write_weights) as download:
+            self.assertEqual(vocal_isolation.get_model_path(settings), str(expected))
+            self.assertEqual(vocal_isolation.get_model_path(settings), str(expected))
+        download.assert_called_once_with(expected.parent, settings)
 
     def test_cached_config_less_q4_weights_do_not_redownload_model_repo(self):
-        settings = self.settings("huggingface", support=False, offline=True)
+        settings = self.settings()
         repo = loading.DEFAULT_MODEL_REPOSITORIES["DevParker/VibeVoice7b-low-vram (4-bit)"]
         model_root = settings.tts_dir / repo["folder"]
         q4_weights = model_root / repo["subfolder"]
@@ -314,6 +328,25 @@ class ModelLoadingTests(unittest.TestCase):
             resolved = loading.resolve_model("DevParker/VibeVoice7b-low-vram (4-bit)", settings)
         self.assertTrue(resolved.quantization["load_in_4bit"])
         self.assertEqual(resolved.model_dir, model_root.resolve())
+
+    def test_cached_q4_weights_download_only_missing_base_config(self):
+        settings = self.settings()
+        repo = loading.DEFAULT_MODEL_REPOSITORIES["DevParker/VibeVoice7b-low-vram (4-bit)"]
+        weights = write_model(settings.tts_dir / repo["folder"] / repo["subfolder"], 3584)
+        (weights / "config.json").unlink()
+
+        def download_config(_repo, destination, _settings, **_kwargs):
+            destination.mkdir(parents=True)
+            (destination / "config.json").write_text(json.dumps({"model_type": "vibevoice"}))
+            return destination.resolve()
+
+        with patch.object(loading, "_snapshot_download", side_effect=download_config) as download:
+            resolved = loading.resolve_model("VibeVoice-7B-4bit", settings)
+        self.assertEqual(resolved.model_dir, weights.parent.resolve())
+        download.assert_called_once_with(
+            "vibevoice/VibeVoice-7B", settings.tts_dir / "VibeVoice-7B-config", settings,
+            allow_patterns=["config.json", "generation_config.json"],
+        )
 
 
 if __name__ == "__main__":

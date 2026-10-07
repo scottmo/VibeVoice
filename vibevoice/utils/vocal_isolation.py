@@ -59,13 +59,6 @@ def get_model_path(settings: Optional[ModelLoadingSettings] = None) -> str:
     model_path = model_dir / MODEL_FILENAME
     
     if not model_path.exists():
-        if settings.hf_offline:
-            raise RuntimeError(f"Vocal isolation weights are missing at {model_path}; HF offline mode prohibits downloads")
-        if not settings.allow_support_downloads:
-            raise RuntimeError(
-                f"Vocal isolation weights are missing at {model_path}; enable VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS "
-                "or place MelBandRoformer.ckpt in models/vocal_isolation/MelBandRoformer."
-            )
         print(f"🔽 Vocal isolation model not found. Downloading from HuggingFace...")
         download_model(model_dir, settings)
     
@@ -75,10 +68,6 @@ def get_model_path(settings: Optional[ModelLoadingSettings] = None) -> str:
 def download_model(model_dir: Path, settings=None) -> None:
     """Download the Mel-Band-Roformer model from HuggingFace."""
     settings = settings or settings_from_args()
-    if settings.hf_offline:
-        raise RuntimeError("HF offline mode prohibits downloading the vocal isolation model")
-    if not settings.allow_support_downloads:
-        raise RuntimeError("Supporting downloads are disabled by VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS")
     try:
         from huggingface_hub import hf_hub_download
     except ImportError:

@@ -44,7 +44,7 @@ class DemoStub:
         }
         self.available_models = {"Test model": "test-model"}
         self.model_path = "Test model"
-        self.model_settings = SimpleNamespace(source="local", models_dir=Path("models"), tts_dir=Path("models/tts"))
+        self.model_settings = SimpleNamespace(models_dir=Path("models"), tts_dir=Path("models/tts"))
         self.device = "cpu"
         self.inference_steps = 5
         self.load_on_demand = False
@@ -107,7 +107,7 @@ class MainInterfaceTests(unittest.TestCase):
             self.assertTrue(dependency["js"])
 
     def test_startup_opens_page_without_loading_and_default_selection_loads_manually(self):
-        settings = app_module.ModelLoadingSettings("local", Path("models"), False, True)
+        settings = app_module.ModelLoadingSettings(Path("models"))
         for lod in (False, True):
             with (
                 self.subTest(lod=lod),
@@ -126,6 +126,9 @@ class MainInterfaceTests(unittest.TestCase):
                 self.assertIsNone(demo.model)
                 self.assertIsNone(demo.processor)
                 self.assertTrue(demo.available_voices)
+                self.assertEqual(demo.available_models["Test model"], "test-model")
+                self.assertEqual(demo.available_models["VibeVoice-1.5B"], "microsoft/VibeVoice-1.5B")
+                self.assertEqual(demo.available_models["VibeVoice-7B-4bit"], "DevParker/VibeVoice7b-low-vram (4-bit)")
                 log = next(component for component in interface.config["components"]
                            if component.get("props", {}).get("label") == "Generation Log")
                 self.assertIn("No model loaded", log["props"]["value"])
@@ -480,12 +483,16 @@ class MainInterfaceTests(unittest.TestCase):
         self.assertGreater(abs(int(output[1][0])), int(samples[0] * 32767))
 
     def test_removed_script_ai_flags_are_rejected_and_model_flags_remain(self):
-        with patch.object(sys, "argv", ["main.py", "--model-source", "local", "--model-path", "VibeVoice-1.5B", "--debug"]):
+        with patch.object(sys, "argv", ["main.py", "--model-path", "VibeVoice-1.5B", "--debug"]):
             args = app_module.parse_args()
-        self.assertEqual(args.model_source, "local")
+        self.assertEqual(args.model_path, "VibeVoice-1.5B")
         self.assertTrue(args.debug)
 
         for removed_flag in (
+            "--model-source",
+            "--allow-support-downloads",
+            "--no-support-downloads",
+            "--hf-offline",
             "--script-ai-url",
             "--script_ai_url",
             "--script-ai-model",

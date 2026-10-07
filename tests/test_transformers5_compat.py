@@ -116,7 +116,7 @@ class Transformers5CompatibilityTests(unittest.TestCase):
             serialized["quantization_config"]["llm_int8_skip_modules"] = skips
             config_file.write_text(json.dumps(serialized), encoding="utf-8")
             del quantized
-            settings = ModelLoadingSettings("local", root, False, True)
+            settings = ModelLoadingSettings(root)
             with (
                 patch("vibevoice.model_loading.resolve_tokenizer_path", return_value=q8_dir),
                 patch.object(VibeVoiceProcessor, "from_pretrained", return_value=object()),

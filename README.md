@@ -201,10 +201,7 @@ python main.py --debug
 python main.py --port 8080
 
 # Use a local checkpoint and load it only when generation starts
-python main.py --model-source local --model-path VibeVoice-1.5B --lod
-
-# Use offline mode for Hugging Face models
-python main.py --lod --hf-offline
+python main.py --model-path VibeVoice-1.5B --lod
 
 # Custom cache directory
 python main.py --lod --hf-cache-dir "/path/to/cache"
@@ -213,7 +210,7 @@ python main.py --lod --hf-cache-dir "/path/to/cache"
 ### 🔧 Setup
 
 1. **Install dependencies**: Follow the installation instructions below
-2. **Configure model loading (optional)**: Copy `.env-sample` to `.env` and set the model source or model directory
+2. **Configure model loading (optional)**: Copy `.env-sample` to `.env` and set the model name or model directory
 3. **Add custom voices**: Place voice samples in the `custom_voices/` directory (supports subdirectories)
 4. **Run the interface**: 
    - **Windows**: Double-click `run_vibevoice.bat` (easiest)
@@ -235,42 +232,16 @@ VibeVoice includes built-in audio editing capabilities directly in the player:
 - **Download Trimmed**: Download only the selected portion of the audio
 - **Gain Integration**: Gain adjustments work seamlessly with trimmed audio
 
-### 🔄 Offline Mode
-
-Run VibeVoice without internet access using cached models:
-
-```bash
-# Force offline mode
-python main.py --lod --hf-offline
-
-# Use custom cache directory
-python main.py --lod --hf-offline --hf-cache-dir "/shared/cache"
-
-# Environment variable (alternative)
-export HF_HUB_OFFLINE=1
-python main.py --lod
-```
-
 ### 📦 Local model folders
 
-Model loading is controlled by `.env` or command-line options. `VIBEVOICE_MODELS_DIR`
-names the shared root for the TTS checkpoints and their supporting assets; it is
-not the path to one model. `.env-sample` uses the repository's `models/` folder.
-If you store models on another drive, copy it to `.env` and change the root,
-for example:
+Model loading uses one path: reuse a complete local checkpoint when its folder matches the selected model, and download missing model files from Hugging Face. `VIBEVOICE_MODELS_DIR` names the shared root for checkpoints and supporting assets. Copy `.env-sample` to `.env` to choose the default model and root:
 
 ```dotenv
-VIBEVOICE_MODEL_SOURCE=local
 VIBEVOICE_MODEL=VibeVoice-1.5B
 VIBEVOICE_MODELS_DIR=F:/Apps/vibevoice_models
-VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS=true
 ```
 
-The root uses `tts/` for checkpoints, `tokenizers/` for Qwen tokenizer assets,
-and `vocal_isolation/` for the optional isolation model. Only `tts/` needs to
-contain a checkpoint for local model discovery; the supporting asset folders
-can be created as needed. Keep each TTS checkpoint's `config.json`, checkpoint
-index, and every indexed shard together:
+The root uses `tts/` for checkpoints, `tokenizers/` for Qwen tokenizer assets, and `vocal_isolation/` for the optional isolation model. Supporting asset folders are created as needed. Keep each TTS checkpoint's `config.json`, checkpoint index, and every indexed shard together:
 
 ```text
 F:/Apps/vibevoice_models/
@@ -286,33 +257,17 @@ F:/Apps/vibevoice_models/
       MelBandRoformer.ckpt
 ```
 
-Local mode discovers complete VibeVoice TTS checkpoints under
-`<VIBEVOICE_MODELS_DIR>/tts/` and excludes ASR checkpoints. It never downloads
-replacement TTS weights. If a checkpoint lacks tokenizer files, supporting
-downloads can place only the matching Qwen tokenizer in
-`<VIBEVOICE_MODELS_DIR>/tokenizers/`. Vocal-isolation weights use
-`<VIBEVOICE_MODELS_DIR>/vocal_isolation/MelBandRoformer/`. Set
-`VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS=false` or pass `--no-support-downloads` to
-disable tokenizer and optional vocal-isolation downloads. `HF_HUB_OFFLINE=1`
-or `--hf-offline` prohibits all Hub downloads, regardless of that setting.
+The model selector includes the Hugging Face catalog and complete local VibeVoice TTS checkpoints under `<VIBEVOICE_MODELS_DIR>/tts/`, excluding ASR checkpoints. Names such as `VibeVoice-1.5B`, `VibeVoice-7B`, and `VibeVoice-Large-Q8`, or their Hugging Face repository IDs, reuse the corresponding local folders. Missing or incomplete catalog checkpoints download into those same folders. Missing Qwen tokenizers and vocal-isolation weights download automatically into their supporting asset folders.
 
-To download a model into `<VIBEVOICE_MODELS_DIR>/tts/` instead, set
-`VIBEVOICE_MODEL_SOURCE=huggingface`; the model selector can use names such as
-`VibeVoice-1.5B`, `VibeVoice-7B`, or `VibeVoice-Large-Q8`. CLI options override
-`.env` values. `--models-dir` sets the shared asset root, while `--model-path`
-selects a model by name or points directly to one complete checkpoint folder.
-After saving `.env`, double-click `run_vibevoice.bat` to start with that
-configuration, or pass overrides to the launcher:
+CLI options override `.env` values. `--models-dir` sets the shared asset root; `--model-path` selects a catalog name, Hugging Face repository ID, local folder name, or explicit checkpoint directory. An explicit directory must contain a complete checkpoint. After saving `.env`, double-click `run_vibevoice.bat` or pass overrides:
 
 ```powershell
-.\run_vibevoice.bat --models-dir "F:\Apps\vibevoice_models" --model-source local --model-path VibeVoice-1.5B --lod
-python main.py --model-source local --models-dir "F:\Apps\vibevoice_models" --model-path "F:\Apps\vibevoice_models\tts\VibeVoice-1.5B"
-python main.py --model-source huggingface --model-path VibeVoice-1.5B
-python main.py --model-source local --no-support-downloads --hf-offline --lod
+.\run_vibevoice.bat --models-dir "F:\Apps\vibevoice_models" --model-path VibeVoice-1.5B --lod
+python main.py --models-dir "F:\Apps\vibevoice_models" --model-path "F:\Apps\vibevoice_models\tts\VibeVoice-1.5B"
+python main.py --model-path microsoft/VibeVoice-1.5B
 ```
 
-`--model_path` remains supported as an alias. Relative `--models-dir` and
-`--model-path` paths resolve from the repository folder.
+`--model_path` remains supported as an alias. Relative `--models-dir` and `--model-path` paths resolve from the repository folder. `--hf-cache-dir` selects a shared Hugging Face cache.
 
 ### 📁 Voice Organization
 

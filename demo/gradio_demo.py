@@ -1198,7 +1198,6 @@ def main():
     args = parse_args()
     model_settings = settings_from_args(args)
     model_path = args.model_path or default_model_name(
-        model_settings,
         legacy_default="WestZhang/VibeVoice-Large-pt",
     )
     
@@ -1219,7 +1218,7 @@ def main():
     
     print(f"🚀 Launching demo on port {args.port}")
     print(f"📁 Model path: {model_path}")
-    print(f"🧭 Model source: {model_settings.source} ({model_settings.models_dir})")
+    print(f"📂 Model directory: {model_settings.models_dir}")
     print(f"🎭 Available voices: {len(demo_instance.available_voices)}")
     print(f"🔴 Streaming mode: ENABLED")
     print(f"🔒 Session isolation: ENABLED")

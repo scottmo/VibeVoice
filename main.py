@@ -13,6 +13,7 @@ from typing import Iterator, Tuple, Optional
 # Load the project .env before importing Transformers/Hugging Face modules,
 # which read HF_* environment switches during import.
 from vibevoice.model_loading import (
+    DEFAULT_MODEL_REPOSITORIES,
     ModelLoadingSettings,
     default_model_name,
     discover_local_models,
@@ -555,7 +556,6 @@ def model_worker_process(request_queue, response_queue, model_path, device, infe
 
 class VibeVoiceDemo:
     def __init__(self, model_path: str, device: str = None, inference_steps: int = 5, debug: bool = False, load_on_demand: bool = False,
-                 hf_offline: bool | None = None, hf_cache_dir: str | None = None,
                  model_settings: ModelLoadingSettings | None = None):
         """Initialize the demo without loading model weights."""
         self.model_settings = model_settings or settings_from_args()
@@ -576,16 +576,6 @@ class VibeVoiceDemo:
         self.inference_steps = inference_steps
         self.debug = debug
         self.load_on_demand = load_on_demand
-        # HF loading options
-        if hf_offline or hf_cache_dir:
-            # Retain compatibility for integrations constructing this class
-            # directly instead of passing parsed model settings.
-            from dataclasses import replace
-            self.model_settings = replace(
-                self.model_settings,
-                hf_offline=self.model_settings.hf_offline or bool(hf_offline),
-                hf_cache_dir=(Path(hf_cache_dir).expanduser().resolve() if hf_cache_dir else self.model_settings.hf_cache_dir),
-            )
         self.is_generating = False  # Track generation state
         self.stop_generation = False  # Flag to stop generation
         self.current_streamer = None  # Track current audio streamer
@@ -599,34 +589,21 @@ class VibeVoiceDemo:
         self.response_queue = None
         self.use_multiprocessing_lod = load_on_demand  # Use MP worker only in LOD mode
 
-        if self.model_settings.source == "local":
-            self.available_models = discover_local_models(self.model_settings)
-            requested_path = Path(model_path).expanduser()
-            root_path = requested_path if requested_path.is_absolute() else (Path(__file__).resolve().parent / requested_path)
-            if requested_path.is_absolute() or root_path.is_dir():
-                try:
-                    from vibevoice.model_loading import validate_tts_model
-                    validate_tts_model(root_path)
-                    self.available_models[model_path] = str(root_path.resolve())
-                except ValueError:
-                    pass
-        else:
-            self.available_models = {
-                "WestZhang/VibeVoice-Large-pt": "WestZhang/VibeVoice-Large-pt",
-                "VibeVoice-1.5B": "VibeVoice-1.5B",
-                "VibeVoice-7B": "VibeVoice-7B",
-                "VibeVoice-Large-Q8": "VibeVoice-Large-Q8",
-                "microsoft/VibeVoice-1.5B": "microsoft/VibeVoice-1.5B",
-                "vibevoice/VibeVoice-7B": "vibevoice/VibeVoice-7B",
-                "FabioSarracino/VibeVoice-Large-Q8": "FabioSarracino/VibeVoice-Large-Q8",
-                # Historical 4-bit choice, retained for online users.
-                "DevParker/VibeVoice7b-low-vram (4-bit)": "DevParker/VibeVoice7b-low-vram (4-bit)",
-            }
+        self.available_models = {}
+        for selection, repository in DEFAULT_MODEL_REPOSITORIES.items():
+            self.available_models.setdefault(repository["folder"], selection)
+        for name, path in discover_local_models(self.model_settings).items():
+            self.available_models.setdefault(name, path)
+        requested_path = Path(model_path).expanduser()
+        root_path = requested_path if requested_path.is_absolute() else (Path(__file__).resolve().parent / requested_path)
+        if requested_path.is_absolute() or root_path.is_dir():
+            self.available_models[model_path] = str(root_path.resolve())
+        elif "/" in model_path and model_path not in DEFAULT_MODEL_REPOSITORIES:
+            self.available_models[model_path] = model_path
 
         self.model_path = normalize_model_selection(
             self.model_path,
             self.available_models,
-            self.model_settings.source,
         )
 
         # Build the page and voice choices before loading any model weights.
@@ -1715,11 +1692,6 @@ def create_demo_interface(demo_instance: VibeVoiceDemo):
     def render_model_select(choices, selected_value):
         if choices:
             info = "Select a model (the current model unloads when switched)."
-        elif demo_instance.model_settings.source == "local":
-            info = (
-                "No complete local TTS checkpoints found under "
-                f"{demo_instance.model_settings.tts_dir}. Add a model folder there."
-            )
         else:
             info = "No models are available."
         return render_native_select(
@@ -2732,7 +2704,6 @@ def main():
     args = parse_args()
     model_settings = settings_from_args(args)
     model_path = args.model_path or default_model_name(
-        model_settings,
         legacy_default="WestZhang/VibeVoice-Large-pt",
     )
 
@@ -2771,8 +2742,6 @@ def main():
         inference_steps=args.inference_steps,
         debug=args.debug,
         load_on_demand=args.lod,
-        hf_offline=args.hf_offline,
-        hf_cache_dir=args.hf_cache_dir,
         model_settings=model_settings,
     )
     
@@ -2781,7 +2750,7 @@ def main():
     
     print(f"🚀 Launching demo on port 7590 (network accessible)")
     print(f"📁 Model path: {model_path}")
-    print(f"🧭 Model source: {model_settings.source} ({model_settings.models_dir})")
+    print(f"📂 Model directory: {model_settings.models_dir}")
     print(f"🎭 Available voices: {len(demo_instance.available_voices)}")
     print(f"🔴 Streaming mode: ENABLED")
     print(f"🔒 Session isolation: ENABLED")

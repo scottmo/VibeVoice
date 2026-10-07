@@ -234,21 +234,27 @@ python main.py --lod
 
 ### 📦 Local model folders
 
-Model loading is controlled by `.env` or command-line options. The sample config
-uses local checkpoints and selects VibeVoice-1.5B:
+Model loading is controlled by `.env` or command-line options. `VIBEVOICE_MODELS_DIR`
+names the shared root for the TTS checkpoints and their supporting assets; it is
+not the path to one model. `.env-sample` uses the repository's `models/` folder.
+If you store models on another drive, copy it to `.env` and change the root,
+for example:
 
 ```dotenv
 VIBEVOICE_MODEL_SOURCE=local
 VIBEVOICE_MODEL=VibeVoice-1.5B
-VIBEVOICE_MODELS_DIR=models
+VIBEVOICE_MODELS_DIR=F:/Apps/vibevoice_models
 VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS=true
 ```
 
-Copy complete TTS model folders into these locations (keep each `config.json`,
-checkpoint index, and every indexed shard together):
+The root uses `tts/` for checkpoints, `tokenizers/` for Qwen tokenizer assets,
+and `vocal_isolation/` for the optional isolation model. Only `tts/` needs to
+contain a checkpoint for local model discovery; the supporting asset folders
+can be created as needed. Keep each TTS checkpoint's `config.json`, checkpoint
+index, and every indexed shard together:
 
 ```text
-models/
+F:/Apps/vibevoice_models/
   tts/
     VibeVoice-1.5B/
     VibeVoice-7B/
@@ -261,24 +267,29 @@ models/
       MelBandRoformer.ckpt
 ```
 
-Local mode discovers complete VibeVoice TTS checkpoints under `models/tts/`,
-and excludes ASR checkpoints. It never downloads replacement TTS weights. If a
-checkpoint lacks tokenizer files, supporting downloads can place only the
-matching Qwen tokenizer in `models/tokenizers/`. Set
+Local mode discovers complete VibeVoice TTS checkpoints under
+`<VIBEVOICE_MODELS_DIR>/tts/` and excludes ASR checkpoints. It never downloads
+replacement TTS weights. If a checkpoint lacks tokenizer files, supporting
+downloads can place only the matching Qwen tokenizer in
+`<VIBEVOICE_MODELS_DIR>/tokenizers/`. Vocal-isolation weights use
+`<VIBEVOICE_MODELS_DIR>/vocal_isolation/MelBandRoformer/`. Set
 `VIBEVOICE_ALLOW_SUPPORT_DOWNLOADS=false` or pass `--no-support-downloads` to
 disable tokenizer and optional vocal-isolation downloads. `HF_HUB_OFFLINE=1`
 or `--hf-offline` prohibits all Hub downloads, regardless of that setting.
 
-To download a model into `models/tts/` instead, set
+To download a model into `<VIBEVOICE_MODELS_DIR>/tts/` instead, set
 `VIBEVOICE_MODEL_SOURCE=huggingface`; the model selector can use names such as
 `VibeVoice-1.5B`, `VibeVoice-7B`, or `VibeVoice-Large-Q8`. CLI options override
-`.env` values:
+`.env` values. `--models-dir` sets the shared asset root, while `--model-path`
+selects a model by name or points directly to one complete checkpoint folder.
+After saving `.env`, double-click `run_vibevoice.bat` to start with that
+configuration, or pass overrides to the launcher:
 
 ```powershell
-python main.py --model-source local --models-dir models --model-path VibeVoice-1.5B
+.\run_vibevoice.bat --models-dir "F:\Apps\vibevoice_models" --model-source local --model-path VibeVoice-1.5B --lod
+python main.py --model-source local --models-dir "F:\Apps\vibevoice_models" --model-path "F:\Apps\vibevoice_models\tts\VibeVoice-1.5B"
 python main.py --model-source huggingface --model-path VibeVoice-1.5B
 python main.py --model-source local --no-support-downloads --hf-offline --lod
-python main.py --model-source local --model-path "F:\Apps\ComfyUI\ComfyUI\models\tts\VibeVoice\VibeVoice-1.5B"
 ```
 
 `--model_path` remains supported as an alias. Relative `--models-dir` and
